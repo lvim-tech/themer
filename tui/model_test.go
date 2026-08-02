@@ -71,6 +71,37 @@ func TestApplyScreenRendersEachStatus(t *testing.T) {
 	}
 }
 
+// Tab narrows the list to one family and cycles back around to All;
+// shift+tab walks the other way, off the first tab onto the last family.
+func TestTabsCycleThroughTheFamilies(t *testing.T) {
+	m := testModel(t)
+	if len(m.list.Items()) != 2 {
+		t.Fatalf("All should hold both themes, has %d", len(m.list.Items()))
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	if n := len(m.list.Items()); n != 1 {
+		t.Fatalf("the first family tab should hold 1 theme, has %d", n)
+	}
+	if it := m.list.Items()[0].(item); it.t.Family != "everforest" {
+		t.Errorf("first tab shows %q, families out of order", it.t.Family)
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = next.(Model)
+	if m.tab != 0 {
+		t.Errorf("shift+tab from the first family should return to All, tab = %d", m.tab)
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = next.(Model)
+	if m.tab != len(m.families) {
+		t.Errorf("shift+tab from All should wrap to the last family, tab = %d", m.tab)
+	}
+	view := m.View()
+	if !strings.Contains(view, "All") || !strings.Contains(view, "Nord") {
+		t.Errorf("tab bar is missing its labels:\n%s", view)
+	}
+}
+
 // Coming back from the apply screen re-reads the state file, so the ● sits
 // on the theme that was just applied, not the one the program started with.
 func TestReturningFromApplyMovesTheCurrentMarker(t *testing.T) {

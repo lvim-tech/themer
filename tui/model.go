@@ -63,22 +63,27 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, li list.Item)
 }
 
 var (
-	markerStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	dimStyle      = lipgloss.NewStyle().Faint(true)
-	okStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	failStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	titleStyle    = lipgloss.NewStyle().Bold(true)
+	markerStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	selectedStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	activeTabStyle = lipgloss.NewStyle().Bold(true).Reverse(true)
+	tabStyle       = lipgloss.NewStyle().Faint(true)
+	dimStyle       = lipgloss.NewStyle().Faint(true)
+	okStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	failStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	titleStyle     = lipgloss.NewStyle().Bold(true)
 )
 
 type Model struct {
-	cfg     config.Config
-	themes  []theme.Theme
-	list    list.Model
-	screen  screen
-	width   int
-	height  int
-	current string
+	cfg      config.Config
+	themes   []theme.Theme
+	list     list.Model
+	screen   screen
+	width    int
+	height   int
+	current  string
+	items    []item   // every theme with its precomputed swatch, in list order
+	families []string // unique family names, the tabs after "All"
+	tab      int      // 0 is All, i>0 is families[i-1]
 
 	// apply screen
 	target   theme.Theme
@@ -91,15 +96,44 @@ type Model struct {
 
 func New(cfg config.Config, themes []theme.Theme) Model {
 	current := theme.Current(cfg.StateFile)
-	items := make([]list.Item, len(themes))
+	var families []string
+	for _, t := range themes {
+		if len(families) == 0 || families[len(families)-1] != t.Family {
+			families = append(families, t.Family) // themes arrive sorted, so families group
+		}
+	}
+	l := list.New(nil, itemDelegate{}, 0, 0)
+	l.Title = "themer — one switch for the whole desktop"
+	l.SetShowStatusBar(false)
+	l.SetShowTitle(false) // the tab bar carries the context instead
+	l.Styles.Title = titleStyle
+	// The paginator's default • dots read as specks under a 48-item list;
+	// full circles at the same cell width keep the layout and become legible.
+	l.Paginator.ActiveDot = selectedStyle.Render("●")
+	l.Paginator.InactiveDot = dimStyle.Render("○")
+	items := make([]item, len(themes))
 	for i, t := range themes {
 		items[i] = item{t: t, current: t.Name == current, swatch: swatchFor(cfg, t)}
 	}
-	l := list.New(items, itemDelegate{}, 0, 0)
-	l.Title = "themer — one switch for the whole desktop"
-	l.SetShowStatusBar(false)
-	l.Styles.Title = titleStyle
-	return Model{cfg: cfg, themes: themes, list: l, current: current}
+	m := Model{cfg: cfg, themes: themes, list: l, current: current, items: items, families: families}
+	m.setTab(0)
+	return m
+}
+
+// setTab fills the list with the tab's themes: tab 0 is every family, tab
+// i>0 is families[i-1]. The cursor goes back to the top — carrying an index
+// between differently sized lists lands on an arbitrary theme.
+func (m *Model) setTab(tab int) {
+	m.tab = tab
+	var visible []list.Item
+	for _, it := range m.items {
+		if tab > 0 && it.t.Family != m.families[tab-1] {
+			continue
+		}
+		visible = append(visible, it)
+	}
+	m.list.SetItems(visible)
+	m.list.ResetSelected()
 }
 
 // swatchFor renders the preview blocks. A palette that fails to load shows
@@ -113,10 +147,10 @@ func swatchFor(cfg config.Config, t theme.Theme) string {
 	var b strings.Builder
 	for _, key := range swatchKeys {
 		if hex, ok := p[key]; ok {
-			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render("██"))
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render("● "))
 		}
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), " ")
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -138,7 +172,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.list.SetSize(msg.Width, msg.Height-1)
+		// The tab bar wraps on narrow terminals; measure it instead of
+		// assuming one line, or the list draws past the bottom edge.
+		m.list.SetSize(msg.Width, msg.Height-lipgloss.Height(m.tabBar())-1)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -155,6 +191,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if it, ok := m.list.SelectedItem().(item); ok {
 					return m.startApply(it.t)
 				}
+			case "tab", "c":
+				m.setTab((m.tab + 1) % (len(m.families) + 1))
+				return m, nil
+			case "shift+tab", "C":
+				m.setTab((m.tab + len(m.families)) % (len(m.families) + 1))
+				return m, nil
 			}
 		case screenApply:
 			if m.applying {
@@ -208,17 +250,16 @@ func (m Model) startApply(t theme.Theme) (tea.Model, tea.Cmd) {
 }
 
 // refreshCurrent re-marks the list after a switch without re-reading the
-// palettes — only the ● moves.
+// palettes — only the ● moves. It touches the master items, not the list's
+// visible slice, so the marker survives a later tab change.
 func (m Model) refreshCurrent() Model {
 	m.current = theme.Current(m.cfg.StateFile)
-	items := m.list.Items()
-	for i, li := range items {
-		if it, ok := li.(item); ok {
-			it.current = it.t.Name == m.current
-			items[i] = it
-		}
+	for i := range m.items {
+		m.items[i].current = m.items[i].t.Name == m.current
 	}
-	m.list.SetItems(items)
+	keep := m.list.Index()
+	m.setTab(m.tab)
+	m.list.Select(keep)
 	return m
 }
 
@@ -227,12 +268,34 @@ func (m Model) View() string {
 	case screenApply:
 		return m.viewApply()
 	default:
-		v := m.list.View()
+		v := m.tabBar() + "\n" + m.list.View()
 		if m.err != nil {
 			v += "\n" + failStyle.Render("✗ "+m.err.Error())
 		}
 		return v
 	}
+}
+
+// tabBar renders All plus one tab per family. Tabs wrap as plain text on
+// narrow terminals rather than truncating: losing sight of a family is
+// worse than a second line.
+func (m Model) tabBar() string {
+	labels := make([]string, 0, len(m.families)+1)
+	for i, name := range append([]string{"All"}, m.families...) {
+		if i > 0 {
+			name = strings.ToUpper(name[:1]) + name[1:]
+		}
+		if i == m.tab {
+			labels = append(labels, activeTabStyle.Render(" "+name+" "))
+		} else {
+			labels = append(labels, tabStyle.Render(" "+name+" "))
+		}
+	}
+	bar := strings.Join(labels, "")
+	if m.width > 0 {
+		bar = lipgloss.NewStyle().Width(m.width).Render(bar)
+	}
+	return bar
 }
 
 func (m Model) viewApply() string {
