@@ -117,7 +117,18 @@ func New(cfg config.Config, themes []theme.Theme) Model {
 	}
 	m := Model{cfg: cfg, themes: themes, list: l, current: current, items: items, families: families}
 	m.setTab(0)
+	m.selectCurrent() // open on the active theme, not on whatever sorts first
 	return m
+}
+
+// selectCurrent moves the cursor to the ● theme when it is on screen.
+func (m *Model) selectCurrent() {
+	for i, li := range m.list.Items() {
+		if it, ok := li.(item); ok && it.current {
+			m.list.Select(i)
+			return
+		}
+	}
 }
 
 // setTab fills the list with the tab's themes: tab 0 is every family, tab
@@ -134,6 +145,7 @@ func (m *Model) setTab(tab int) {
 	}
 	m.list.SetItems(visible)
 	m.list.ResetSelected()
+	m.selectCurrent() // a tab that holds the active theme opens on it
 }
 
 // swatchFor renders the preview blocks. A palette that fails to load shows

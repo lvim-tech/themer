@@ -11,6 +11,7 @@ package theme
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -55,15 +56,12 @@ func Discover(palettesDir string) ([]Theme, error) {
 		if !ok {
 			continue
 		}
-		family, variant, ok := strings.Cut(base, "_")
+		name, ok := NameFor(base)
 		if !ok {
 			continue
 		}
-		themes = append(themes, Theme{
-			Name:    "Lvim" + strings.ToUpper(family[:1]) + family[1:] + "_" + variant,
-			Family:  family,
-			Variant: variant,
-		})
+		family, variant, _ := strings.Cut(base, "_")
+		themes = append(themes, Theme{Name: name, Family: family, Variant: variant})
 	}
 	sort.Slice(themes, func(i, j int) bool { return themes[i].Name < themes[j].Name })
 	if len(themes) == 0 {
@@ -136,19 +134,24 @@ func ByName(themes []Theme, name string) (Theme, bool) {
 	return Theme{}, false
 }
 
-// LoadPalette parses the `$key: #hex;` lines of a palette file. Everything
-// else in the file — comments, $style — is skipped rather than rejected,
-// because the file is generated and its prose changes more often than its
-// colour lines.
+// LoadPalette parses the `$key: #hex;` lines of a palette file.
 func LoadPalette(path string) (Palette, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	return ParsePalette(f, path)
+}
 
+// ParsePalette reads a palette from any source — the local file, a GitHub
+// download. Everything that is not a `$key: #hex;` line — comments, $style —
+// is skipped rather than rejected, because the file is generated and its
+// prose changes more often than its colour lines. label only names the
+// source in errors.
+func ParsePalette(r io.Reader, label string) (Palette, error) {
 	p := Palette{}
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if !strings.HasPrefix(line, "$") {
@@ -168,9 +171,19 @@ func LoadPalette(path string) (Palette, error) {
 		return nil, err
 	}
 	if len(p) == 0 {
-		return nil, fmt.Errorf("%s holds no colours", path)
+		return nil, fmt.Errorf("%s holds no colours", label)
 	}
 	return p, nil
+}
+
+// NameFor turns a palette basename (everforest_soft) into the canonical
+// theme name, the same lowercase↔title mapping Discover relies on.
+func NameFor(base string) (string, bool) {
+	family, variant, ok := strings.Cut(base, "_")
+	if !ok || family == "" {
+		return "", false
+	}
+	return "Lvim" + strings.ToUpper(family[:1]) + family[1:] + "_" + variant, true
 }
 
 // Current reads the active theme name from the state file (~/.theme).

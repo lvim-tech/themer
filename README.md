@@ -9,13 +9,18 @@ SIGUSR2), and whichever compositor is running — mango, Hyprland or niri.
 themer                  # pick from the list (TUI)
 themer LvimNord_dark    # switch without the TUI — for keybindings and scripts
 themer --list           # print the theme names, ● marks the current one
+themer --sync           # pull the palettes from GitHub into themes.toml
 ```
 
 The theme list and every colour come from one place: the generated
 `lvim-gtk/palettes/*.scss` files. Nothing here defines a colour of its own —
-unless the configuration does. A theme can also live entirely in
-`config.toml` as values: a new name adds it to the list, a known name
-replaces the file palette. Everything that reads the palette — the preview
+unless the configuration does. `themer --sync` pulls every palette from
+the repository named by `palettes_repo` (default `lvim-tech/lvim-gtk`) and
+writes them as values into `themes.toml` — after that themer needs neither
+the repository on disk nor its path. The file is regenerated wholesale on
+every sync, which is why it is not `config.toml`: hand-written themes belong
+there, load after the synced ones, and override them by name. A new name
+adds a theme, a known name replaces its palette. Everything that reads the palette — the preview
 dots, the compositors, every `{placeholder}` — follows; appliers that need a
 per-theme file (kitty, tmux, waybar) still fail loudly until that file
 exists too.

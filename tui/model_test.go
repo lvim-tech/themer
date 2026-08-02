@@ -48,6 +48,24 @@ func TestListShowsThemesAndMarksTheCurrent(t *testing.T) {
 	}
 }
 
+// The list opens with the cursor on the active theme, not on whatever sorts
+// first. The current theme here is deliberately the SECOND item: with the
+// first one active the test would pass on a cursor that never moved.
+func TestListOpensOnTheCurrentTheme(t *testing.T) {
+	seed := testModel(t)
+	if err := os.WriteFile(seed.cfg.StateFile, []byte("LvimNord_dark\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := New(seed.cfg, seed.themes)
+	it, ok := m.list.SelectedItem().(item)
+	if !ok {
+		t.Fatal("nothing selected")
+	}
+	if it.t.Name != "LvimNord_dark" {
+		t.Errorf("cursor opened on %s, not on the current theme", it.t.Name)
+	}
+}
+
 // The apply screen must tell apart every outcome at a glance: the tick, the
 // skip with its reason, the failure with its error.
 func TestApplyScreenRendersEachStatus(t *testing.T) {

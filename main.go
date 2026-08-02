@@ -6,6 +6,7 @@
 //	themer                  # pick from the list
 //	themer LvimNord_dark    # switch without the TUI
 //	themer --list           # print the theme names
+//	themer --sync           # pull the palettes from GitHub into themes.toml
 package main
 
 import (
@@ -16,6 +17,7 @@ import (
 
 	"github.com/lvim-tech/themer/internal/apply"
 	"github.com/lvim-tech/themer/internal/config"
+	"github.com/lvim-tech/themer/internal/sync"
 	"github.com/lvim-tech/themer/internal/theme"
 	"github.com/lvim-tech/themer/tui"
 )
@@ -39,6 +41,13 @@ func main() {
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "--sync", "-s":
+			n, err := sync.Run("https://api.github.com", cfg.PalettesRepo, config.ThemesFile())
+			if err != nil {
+				fail(err)
+			}
+			fmt.Printf("synced %d themes from github.com/%s into %s\n", n, cfg.PalettesRepo, config.ThemesFile())
+			return
 		case "--list", "-l":
 			current := theme.Current(cfg.StateFile)
 			for _, t := range themes {

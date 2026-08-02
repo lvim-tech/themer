@@ -9,6 +9,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -23,6 +24,9 @@ type Config struct {
 	StateFile string `toml:"state_file"`
 	// ClipackBase is clipack's base directory (bin/, configs/).
 	ClipackBase string `toml:"clipack_base"`
+	// PalettesRepo is the GitHub repository (owner/name) `themer --sync`
+	// pulls the palettes from into themes.toml.
+	PalettesRepo string `toml:"palettes_repo"`
 	// Roles maps a desktop role (focus, border, urgent, …) to a palette key.
 	Roles map[string]string `toml:"roles"`
 	// Targets are the declarative appliers: what to detect, which lines to
@@ -180,23 +184,42 @@ func DefaultTargets() []Target {
 func Default() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
-		PalettesDir: filepath.Join(home, "lvim-tech", "lvim-gtk", "palettes"),
-		StateFile:   filepath.Join(home, ".theme"),
-		ClipackBase: filepath.Join(home, "clipack"),
-		Roles:       DefaultRoles(),
-		Targets:     DefaultTargets(),
+		PalettesDir:  filepath.Join(home, "lvim-tech", "lvim-gtk", "palettes"),
+		StateFile:    filepath.Join(home, ".theme"),
+		ClipackBase:  filepath.Join(home, "clipack"),
+		PalettesRepo: "lvim-tech/lvim-gtk",
+		Roles:        DefaultRoles(),
+		Targets:      DefaultTargets(),
 	}
 }
 
-// Load reads ~/.config/themer/config.toml over the defaults. A missing file
-// is the normal case, not an error.
+// Dir is where themer's own files live.
+func Dir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "themer")
+}
+
+// ThemesFile is the sync target: the generated snapshot of the palettes,
+// kept apart from the hand-written config.toml so a sync can rewrite it
+// wholesale without ever touching a manual edit.
+func ThemesFile() string { return filepath.Join(Dir(), "themes.toml") }
+
+// Load reads the synced themes.toml, then ~/.config/themer/config.toml over
+// the defaults. Missing files are the normal case, not errors. The order
+// matters: config.toml's themes land after the synced ones, so the merge
+// downstream lets a hand-written definition override a synced palette.
 func Load() (Config, error) {
 	cfg := Default()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return cfg, nil
+
+	var synced Config
+	if b, err := os.ReadFile(ThemesFile()); err == nil {
+		if err := toml.Unmarshal(b, &synced); err != nil {
+			return cfg, fmt.Errorf("themes.toml: %w", err)
+		}
+		cfg.Themes = synced.Themes
 	}
-	b, err := os.ReadFile(filepath.Join(home, ".config", "themer", "config.toml"))
+
+	b, err := os.ReadFile(filepath.Join(Dir(), "config.toml"))
 	if err != nil {
 		return cfg, nil
 	}
@@ -230,7 +253,7 @@ func Load() (Config, error) {
 			cfg.Targets = append(cfg.Targets, t)
 		}
 	}
-	cfg.Themes = overlay.Themes // no defaults to merge with: inline themes only come from the file
+	cfg.Themes = append(cfg.Themes, overlay.Themes...) // after the synced ones: manual wins the merge
 	return cfg, nil
 }
 
@@ -243,5 +266,8 @@ func merge(dst *Config, src Config) {
 	}
 	if src.ClipackBase != "" {
 		dst.ClipackBase = src.ClipackBase
+	}
+	if src.PalettesRepo != "" {
+		dst.PalettesRepo = src.PalettesRepo
 	}
 }
