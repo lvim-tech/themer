@@ -121,7 +121,11 @@ func DefaultTargets() []Target {
 			Edits: []Edit{{
 				File: "~/.config/waybar/current.css",
 				Rules: []Rule{
-					{Regex: `^@import ".*";`, Value: `@import "styles/{theme}.css";`},
+					// Anchored on styles/ because current.css carries a second
+					// @import — the colour-free structure.css — which a bare
+					// `@import ".*"` rewrote into a third theme import on the
+					// first switch, silently stripping the bar of its layout.
+					{Regex: `^@import "styles/.*";`, Value: `@import "styles/{theme}.css";`},
 				},
 			}},
 			Reload: []Reload{{Signal: "USR2", Process: "waybar"}},
