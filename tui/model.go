@@ -107,10 +107,11 @@ func New(cfg config.Config, themes []theme.Theme) Model {
 	l.SetShowStatusBar(false)
 	l.SetShowTitle(false) // the tab bar carries the context instead
 	l.Styles.Title = titleStyle
-	// The paginator's default • dots read as specks under a 48-item list;
-	// full circles at the same cell width keep the layout and become legible.
-	l.Paginator.ActiveDot = selectedStyle.Render("●")
-	l.Paginator.InactiveDot = dimStyle.Render("○")
+	// The paginator's default • dots read as specks under a 48-item list.
+	// Full circles, one space apart — the paginator itself concatenates the
+	// dots with no gap, so the space rides inside each dot's string.
+	l.Paginator.ActiveDot = selectedStyle.Render("● ")
+	l.Paginator.InactiveDot = dimStyle.Render("○ ")
 	items := make([]item, len(themes))
 	for i, t := range themes {
 		items[i] = item{t: t, current: t.Name == current, swatch: swatchFor(cfg, t)}
