@@ -31,6 +31,18 @@ type Config struct {
 	// appended. Anything themeable by a line rewrite plus a reload command
 	// belongs here, not in Go.
 	Targets []Target `toml:"targets"`
+	// Themes are palettes defined as values right here instead of files: a
+	// new name adds a theme, a known one replaces the file palette. Only
+	// what reads the palette follows automatically — appliers that need a
+	// per-theme file (kitty, tmux, waybar) still fail loudly until that
+	// file exists too.
+	Themes []ThemeDef `toml:"themes"`
+}
+
+// ThemeDef is one inline theme: a name and its colours.
+type ThemeDef struct {
+	Name    string            `toml:"name"`
+	Palette map[string]string `toml:"palette"`
 }
 
 // Target is one declarative applier.
@@ -218,6 +230,7 @@ func Load() (Config, error) {
 			cfg.Targets = append(cfg.Targets, t)
 		}
 	}
+	cfg.Themes = overlay.Themes // no defaults to merge with: inline themes only come from the file
 	return cfg, nil
 }
 

@@ -26,6 +26,10 @@ type Theme struct {
 	Name    string // canonical: LvimEverforest_soft
 	Family  string // everforest
 	Variant string // soft
+	// Inline is a palette defined as values in config.toml instead of a
+	// file. When set, Load never touches the palettes directory — such a
+	// theme exists entirely in the configuration.
+	Inline Palette
 }
 
 // GTKArg is what lvim-gtk-select takes on its command line.
@@ -66,6 +70,60 @@ func Discover(palettesDir string) ([]Theme, error) {
 		return nil, fmt.Errorf("no *.scss palettes in %s", palettesDir)
 	}
 	return themes, nil
+}
+
+// FromConfig builds a theme out of configuration values. The name is parsed
+// like a canonical one when it fits the LvimFamily_variant shape; anything
+// else becomes its own single-theme family, so a config theme never has to
+// follow the naming scheme to appear in the list.
+func FromConfig(name string, colors map[string]string) Theme {
+	t := Theme{Name: name, Family: strings.ToLower(name)}
+	if after, ok := strings.CutPrefix(name, "Lvim"); ok {
+		if family, variant, ok := strings.Cut(after, "_"); ok && family != "" {
+			t.Family, t.Variant = strings.ToLower(family), variant
+		}
+	}
+	t.Inline = Palette{}
+	for key, value := range colors {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if !strings.HasPrefix(value, "#") {
+			value = "#" + value // tolerate bare rrggbb — TOML strings drop nothing
+		}
+		t.Inline[key] = value
+	}
+	return t
+}
+
+// Merge folds config themes into the discovered list: a matching name
+// replaces the file theme (the inline palette wins), a new name is added.
+func Merge(themes []Theme, extra []Theme) []Theme {
+	for _, e := range extra {
+		replaced := false
+		for i := range themes {
+			if themes[i].Name == e.Name {
+				themes[i] = e
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			themes = append(themes, e)
+		}
+	}
+	sort.Slice(themes, func(i, j int) bool { return themes[i].Name < themes[j].Name })
+	return themes
+}
+
+// Load resolves a theme's palette: inline values when the configuration
+// defines them, the palette file otherwise.
+func Load(t Theme, palettesDir string) (Palette, error) {
+	if t.Inline != nil {
+		if len(t.Inline) == 0 {
+			return nil, fmt.Errorf("theme %s defines no colours in the configuration", t.Name)
+		}
+		return t.Inline, nil
+	}
+	return LoadPalette(t.PaletteFile(palettesDir))
 }
 
 // ByName finds a theme by its canonical name.

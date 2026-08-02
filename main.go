@@ -26,9 +26,16 @@ func main() {
 		fail(err)
 	}
 	themes, err := theme.Discover(cfg.PalettesDir)
-	if err != nil {
+	if err != nil && len(cfg.Themes) == 0 {
+		// A missing palettes directory is only fatal while it is the sole
+		// source: a config full of inline themes stands on its own.
 		fail(err)
 	}
+	var inline []theme.Theme
+	for _, def := range cfg.Themes {
+		inline = append(inline, theme.FromConfig(def.Name, def.Palette))
+	}
+	themes = theme.Merge(themes, inline)
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -61,7 +68,7 @@ func runDirect(cfg config.Config, themes []theme.Theme, name string) {
 	if !ok {
 		fail(fmt.Errorf("no theme %q — see themer --list", name))
 	}
-	p, err := theme.LoadPalette(t.PaletteFile(cfg.PalettesDir))
+	p, err := theme.Load(t, cfg.PalettesDir)
 	if err != nil {
 		fail(err)
 	}

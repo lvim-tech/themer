@@ -12,7 +12,24 @@ themer --list           # print the theme names, ● marks the current one
 ```
 
 The theme list and every colour come from one place: the generated
-`lvim-gtk/palettes/*.scss` files. Nothing here defines a colour of its own.
+`lvim-gtk/palettes/*.scss` files. Nothing here defines a colour of its own —
+unless the configuration does. A theme can also live entirely in
+`config.toml` as values: a new name adds it to the list, a known name
+replaces the file palette. Everything that reads the palette — the preview
+dots, the compositors, every `{placeholder}` — follows; appliers that need a
+per-theme file (kitty, tmux, waybar) still fail loudly until that file
+exists too.
+
+```toml
+[[themes]]
+name = "LvimCustom_dark"
+
+[themes.palette]
+bg  = "#101418"
+fg  = "#c8ccd4"
+red = "#e06c75"
+# … any keys the roles and your rules refer to
+```
 
 ## How a switch works
 

@@ -140,7 +140,7 @@ func (m *Model) setTab(tab int) {
 // as an empty swatch rather than a startup error: one broken generated file
 // must not take the whole list down.
 func swatchFor(cfg config.Config, t theme.Theme) string {
-	p, err := theme.LoadPalette(t.PaletteFile(cfg.PalettesDir))
+	p, err := theme.Load(t, cfg.PalettesDir)
 	if err != nil {
 		return dimStyle.Render("palette unreadable")
 	}
@@ -230,7 +230,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startApply(t theme.Theme) (tea.Model, tea.Cmd) {
-	p, err := theme.LoadPalette(t.PaletteFile(m.cfg.PalettesDir))
+	p, err := theme.Load(t, m.cfg.PalettesDir)
 	if err != nil {
 		m.err = err
 		return m, nil
