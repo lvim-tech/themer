@@ -131,6 +131,38 @@ func DefaultTargets() []Target {
 			Reload: []Reload{{Signal: "USR2", Process: "waybar"}},
 		},
 		{
+			// alacritty live-reloads its config, so there is no reload step —
+			// rewriting the import is the whole job. The rule keeps whatever
+			// directory the import already points at (the colorscheme repo's
+			// extras here, same idea as kitty's include) and swaps only the
+			// file name, so moving the themes means touching the config once,
+			// not this rule.
+			Name:   "alacritty",
+			Detect: Detect{File: "~/.config/alacritty/alacritty.toml"},
+			Edits: []Edit{{
+				File: "~/.config/alacritty/alacritty.toml",
+				Rules: []Rule{
+					{Regex: `^import = \["(.*/)?[^/"]*"\]`, Value: `import = ["${1}{theme}.toml"]`},
+				},
+			}},
+		},
+		{
+			// ghostty picks its theme by NAME from ~/.config/ghostty/themes
+			// and reloads the whole config on SIGUSR2. Detection is by file:
+			// with no window open the edit still lands and the next launch
+			// reads it, same reasoning as waybar. The ^-anchor spares the
+			// commented guidance lines the config carries.
+			Name:   "ghostty",
+			Detect: Detect{File: "~/.config/ghostty/config"},
+			Edits: []Edit{{
+				File: "~/.config/ghostty/config",
+				Rules: []Rule{
+					{Regex: `^theme\s*=.*$`, Value: "theme = {theme}"},
+				},
+			}},
+			Reload: []Reload{{Signal: "USR2", Process: "ghostty"}},
+		},
+		{
 			Name:   "mango",
 			Detect: Detect{Running: "mango", File: "~/.config/mango/appearance.conf"},
 			Edits: []Edit{{

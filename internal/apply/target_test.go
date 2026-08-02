@@ -140,3 +140,43 @@ func TestThemePlaceholderExpandsToTheCanonicalName(t *testing.T) {
 		t.Errorf("{theme} did not expand:\n%s", got)
 	}
 }
+
+// ghostty's config carries commented guidance lines that mention the theme
+// key; only the real assignment may move when the theme switches.
+func TestGhosttyRewritesThemeAndSparesComments(t *testing.T) {
+	a, path := targetFor(t, "ghostty", "config",
+		"# The theme line below is rewritten by themer on every switch.\n"+
+			"# theme = LvimNord_dark\n"+
+			"theme = LvimKanagawa_dark\n")
+
+	if _, err := a.Apply(testTheme, testPalette); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), "\ntheme = LvimEverforest_soft\n") {
+		t.Errorf("theme not rewritten:\n%s", got)
+	}
+	if !strings.Contains(string(got), "# theme = LvimNord_dark") {
+		t.Errorf("commented example did not survive:\n%s", got)
+	}
+}
+
+// alacritty's import keeps its directory across a switch — only the file
+// name is the theme's. A rule that lost the directory would point alacritty
+// at a theme file in ~/.config/alacritty that does not exist.
+func TestAlacrittyRewritesImportAndKeepsItsDirectory(t *testing.T) {
+	a, path := targetFor(t, "alacritty", "alacritty.toml",
+		"live_config_reload = true\n"+
+			"import = [\"/somewhere/extras/alacritty/LvimNord_dark.toml\"]\n")
+
+	if _, err := a.Apply(testTheme, testPalette); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), `import = ["/somewhere/extras/alacritty/LvimEverforest_soft.toml"]`) {
+		t.Errorf("import not rewritten in place:\n%s", got)
+	}
+	if !strings.Contains(string(got), "live_config_reload = true") {
+		t.Errorf("unrelated line did not survive:\n%s", got)
+	}
+}
