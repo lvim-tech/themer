@@ -12,6 +12,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -27,6 +28,7 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
+	ensureClipackOnPath(cfg)
 	themes, err := theme.Discover(cfg.PalettesDir)
 	if err != nil && len(cfg.Themes) == 0 {
 		// A missing palettes directory is only fatal while it is the sole
@@ -98,6 +100,27 @@ func runDirect(cfg config.Config, themes []theme.Theme, name string) {
 	if failed {
 		os.Exit(1)
 	}
+}
+
+// ensureClipackOnPath puts clipack's bin directory on PATH for everything
+// themer runs. Started from a shell it is already there; started from a
+// COMPOSITOR keybind — which is how themer is normally reached, through ql
+// or a hotkey — the environment carries only the login PATH, and tmux and
+// kitty (installed by clipack, with the distribution's copies removed) were
+// simply not found. The appliers then failed on a machine where the same
+// switch worked perfectly from a terminal.
+func ensureClipackOnPath(cfg config.Config) {
+	bin := filepath.Join(cfg.ClipackBase, "bin")
+	if _, err := os.Stat(bin); err != nil {
+		return
+	}
+	current := os.Getenv("PATH")
+	for _, dir := range filepath.SplitList(current) {
+		if dir == bin {
+			return
+		}
+	}
+	os.Setenv("PATH", bin+string(os.PathListSeparator)+current)
 }
 
 func fail(err error) {
