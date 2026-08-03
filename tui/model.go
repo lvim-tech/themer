@@ -107,6 +107,16 @@ func New(cfg config.Config, themes []theme.Theme) Model {
 	l.SetShowStatusBar(false)
 	l.SetShowTitle(false) // the tab bar carries the context instead
 	l.Styles.Title = titleStyle
+	// The filter's prompt and cursor take the interface's own colours. bubbles reads
+	// Styles.Filter* exactly once, inside list.New(), so setting the struct afterwards reaches
+	// nothing — the input keeps the library's defaults: a neon yellow prompt (#ECFD65) and a
+	// pink cursor (#EE6FF8), neither of which belongs to any palette here.
+	l.Styles.FilterPrompt = selectedStyle
+	l.Styles.FilterCursor = selectedStyle
+	l.FilterInput.PromptStyle = selectedStyle
+	l.FilterInput.Cursor.Style = selectedStyle
+	l.FilterInput.PlaceholderStyle = dimStyle
+
 	// The paginator's default • dots read as specks under a 48-item list.
 	// Full circles, one space apart — the paginator itself concatenates the
 	// dots with no gap, so the space rides inside each dot's string.
