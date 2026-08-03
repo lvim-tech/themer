@@ -110,22 +110,32 @@ func DefaultRoles() map[string]string {
 func DefaultTargets() []Target {
 	return []Target{
 		{
-			// waybar freezes its --style path at launch, so all three
-			// compositors start it with a permanent current.css whose
-			// single @import this rule rewrites; SIGUSR2 then makes the
-			// running bar re-read it. Detection is by file, not process:
-			// with no bar running the edit still counts — the next launch
-			// picks it up — and the signal quietly reaches nobody.
+			// waybar needs no theme files at all: its theme is thirteen
+			// @define-color lines, so they are written straight from the
+			// palette into a permanent colors.css. current.css (the --style
+			// the compositors launch waybar with, since it freezes that path
+			// at startup) just imports colors.css and the colour-free
+			// structure.css, and never changes again. SIGUSR2 makes a running
+			// bar re-read the chain; with no bar running the edit still
+			// counts and the next launch picks it up.
 			Name:   "waybar",
-			Detect: Detect{File: "~/.config/waybar/current.css"},
+			Detect: Detect{File: "~/.config/waybar/colors.css"},
 			Edits: []Edit{{
-				File: "~/.config/waybar/current.css",
+				File: "~/.config/waybar/colors.css",
 				Rules: []Rule{
-					// Anchored on styles/ because current.css carries a second
-					// @import — the colour-free structure.css — which a bare
-					// `@import ".*"` rewrote into a third theme import on the
-					// first switch, silently stripping the bar of its layout.
-					{Regex: `^@import "styles/.*";`, Value: `@import "styles/{theme}.css";`},
+					{Regex: `^@define-color bg .*;`, Value: "@define-color bg #{bg};"},
+					{Regex: `^@define-color bg_dark .*;`, Value: "@define-color bg_dark #{bg-dark};"},
+					{Regex: `^@define-color fg .*;`, Value: "@define-color fg #{fg};"},
+					{Regex: `^@define-color fg_light .*;`, Value: "@define-color fg_light #{fg-light};"},
+					{Regex: `^@define-color fg_soft_dark .*;`, Value: "@define-color fg_soft_dark #{fg-soft-dark};"},
+					{Regex: `^@define-color red .*;`, Value: "@define-color red #{red};"},
+					{Regex: `^@define-color orange .*;`, Value: "@define-color orange #{orange};"},
+					{Regex: `^@define-color yellow .*;`, Value: "@define-color yellow #{yellow};"},
+					{Regex: `^@define-color green .*;`, Value: "@define-color green #{green};"},
+					{Regex: `^@define-color teal .*;`, Value: "@define-color teal #{teal};"},
+					{Regex: `^@define-color cyan .*;`, Value: "@define-color cyan #{cyan};"},
+					{Regex: `^@define-color cyan_dark .*;`, Value: "@define-color cyan_dark #{cyan-dark};"},
+					{Regex: `^@define-color blue .*;`, Value: "@define-color blue #{blue};"},
 				},
 			}},
 			Reload: []Reload{{Signal: "USR2", Process: "waybar"}},

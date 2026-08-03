@@ -13,13 +13,22 @@ import (
 var testTheme = theme.Theme{Name: "LvimEverforest_soft", Family: "everforest", Variant: "soft"}
 
 var testPalette = theme.Palette{
-	"yellow-dark": "#a6935a",
-	"green-dark":  "#656831",
-	"red":         "#cb4f4f",
-	"green":       "#75783a",
-	"purple":      "#635d71",
-	"teal":        "#357b6d",
-	"bg-dark":     "#202527",
+	"yellow-dark":  "#a6935a",
+	"green-dark":   "#656831",
+	"red":          "#cb4f4f",
+	"green":        "#75783a",
+	"purple":       "#635d71",
+	"teal":         "#357b6d",
+	"bg-dark":      "#202527",
+	"bg":           "#272c2e",
+	"fg":           "#5a6158",
+	"fg-light":     "#646c62",
+	"fg-soft-dark": "#555c53",
+	"orange":       "#cc7942",
+	"yellow":       "#af9e6b",
+	"cyan":         "#527a57",
+	"cyan-dark":    "#486b4c",
+	"blue":         "#3a6479",
 }
 
 func targetFor(t *testing.T, name, file, body string) (*TargetApplier, string) {
