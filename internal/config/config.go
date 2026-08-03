@@ -173,6 +173,35 @@ func DefaultTargets() []Target {
 			Reload: []Reload{{Signal: "USR2", Process: "ghostty"}},
 		},
 		{
+			// k9s picks a skin BY NAME from ~/.config/k9s/skins, so the
+			// switch is one word in its config. The rule rewrites every
+			// `skin:` line, which is deliberate: k9s allows a per-context
+			// skin, and leaving those pinned to the old palette is exactly
+			// the half-themed result this is meant to prevent. No reload —
+			// k9s re-reads the skin itself while running.
+			Name:   "k9s",
+			Detect: Detect{File: "~/.config/k9s/config.yaml"},
+			Edits: []Edit{{
+				File: "~/.config/k9s/config.yaml",
+				Rules: []Rule{
+					{Regex: `^(\s*)skin:\s*.*$`, Value: "${1}skin: {theme}"},
+				},
+			}},
+		},
+		{
+			// btop names its theme in btop.conf and reads that file only at
+			// startup, so there is nothing to signal: the next launch comes
+			// up themed.
+			Name:   "btop",
+			Detect: Detect{File: "~/.config/btop/btop.conf"},
+			Edits: []Edit{{
+				File: "~/.config/btop/btop.conf",
+				Rules: []Rule{
+					{Regex: `^color_theme\s*=.*$`, Value: `color_theme = "{theme}"`},
+				},
+			}},
+		},
+		{
 			Name:   "mango",
 			Detect: Detect{Running: "mango", File: "~/.config/mango/appearance.conf"},
 			Edits: []Edit{{

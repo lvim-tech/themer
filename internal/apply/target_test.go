@@ -189,3 +189,46 @@ func TestAlacrittyRewritesImportAndKeepsItsDirectory(t *testing.T) {
 		t.Errorf("unrelated line did not survive:\n%s", got)
 	}
 }
+
+// k9s carries a per-context skin as well as the global one, and both have to
+// follow the switch — a context left on the previous palette is exactly the
+// half-themed result this rule exists to prevent. Keys that merely CONTAIN
+// "skin" must not move.
+func TestK9sRewritesEverySkinLine(t *testing.T) {
+	a, path := targetFor(t, "k9s", "config.yaml",
+		"k9s:\n  ui:\n    skin: LvimNord_dark\n    skinDir: /keep/me\n"+
+			"  contexts:\n    prod:\n      skin: LvimNord_dark\n")
+
+	if _, err := a.Apply(testTheme, testPalette); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if n := strings.Count(string(got), "skin: LvimEverforest_soft"); n != 2 {
+		t.Errorf("rewrote %d skin lines, want both:\n%s", n, got)
+	}
+	if !strings.Contains(string(got), "skinDir: /keep/me") {
+		t.Errorf("skinDir was mangled:\n%s", got)
+	}
+}
+
+// btop's theme is one quoted name in btop.conf; the surrounding settings and
+// the commented guidance the file ships with stay put.
+func TestBtopRewritesOnlyTheThemeLine(t *testing.T) {
+	a, path := targetFor(t, "btop", "btop.conf",
+		"#* Name of a btop++ theme\n#color_theme = \"Default\"\n"+
+			"color_theme = \"LvimNord_dark\"\ntheme_background = True\n")
+
+	if _, err := a.Apply(testTheme, testPalette); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), "color_theme = \"LvimEverforest_soft\"") {
+		t.Errorf("theme not rewritten:\n%s", got)
+	}
+	if !strings.Contains(string(got), "#color_theme = \"Default\"") {
+		t.Errorf("the commented example did not survive:\n%s", got)
+	}
+	if !strings.Contains(string(got), "theme_background = True") {
+		t.Errorf("an unrelated setting was lost:\n%s", got)
+	}
+}
