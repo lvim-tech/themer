@@ -48,6 +48,7 @@ func All(cfg config.Config) []Applier {
 	appliers := []Applier{
 		NewStateFile(cfg.StateFile),
 		NewClipack(cfg.ClipackBase),
+		NewNeovim(),
 		NewKitty(),
 		NewTmux(cfg.ClipackBase),
 		NewWezterm(),

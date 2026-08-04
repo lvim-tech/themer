@@ -47,6 +47,23 @@ func (t Theme) GTKName() string {
 	return name
 }
 
+// NvimName is the neovim colorscheme the theme loads: lvim-everforest-soft.
+// Derived like GTKName, from the same palette basename, but joined with dashes
+// — and with the family dropped when it IS lvim: the house palette is lvim_dark
+// and its colorscheme is lvim-dark, not lvim-lvim-dark. Measured over all 48
+// palettes against lvim-colorscheme's colors/*.lua; that one case is the only
+// place the plain join was wrong.
+func (t Theme) NvimName() string {
+	name := "lvim"
+	if t.Family != "" && t.Family != "lvim" {
+		name += "-" + t.Family
+	}
+	if t.Variant != "" {
+		name += "-" + t.Variant
+	}
+	return name
+}
+
 func capitalise(s string) string {
 	if s == "" {
 		return ""
