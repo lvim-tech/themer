@@ -1,7 +1,7 @@
 // themer switches the Lvim theme everywhere at once: the ~/.theme state
-// file, every clipack-installed tool, kitty, tmux, wezterm, GTK 3+4 through
-// lvim-gtk-select, and whichever compositor is running — plus anything else
-// declared as a target in ~/.config/themer/config.toml.
+// file, every clipack-installed tool, kitty, tmux, wezterm, GTK 3+4, and
+// whichever compositor is running — plus anything else declared as a target
+// in ~/.config/themer/config.toml.
 //
 //	themer                  # pick from the list
 //	themer LvimNord_dark    # switch without the TUI

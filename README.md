@@ -2,8 +2,10 @@
 
 One switch for the whole desktop. Pick a theme once and every corner follows:
 the `~/.theme` state file, every clipack-installed tool, kitty (live, via
-SIGUSR1), tmux, GTK 3+4 through `lvim-gtk-select`, waybar (live, via
-SIGUSR2), and whichever compositor is running — mango, Hyprland or niri.
+SIGUSR1), tmux, GTK 3+4 (including libadwaita, which reads only
+`~/.config/gtk-4.0/gtk.css` and is therefore the one half that has to be
+copied), waybar (live, via SIGUSR2), and whichever compositor is running —
+mango, Hyprland or niri.
 
 ```
 themer                  # pick from the list (TUI)

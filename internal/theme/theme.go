@@ -20,9 +20,8 @@ import (
 
 // Theme is one switchable theme, known under three spellings:
 // canonical LvimEverforest_soft ($THEME, kitty/tmux/wezterm file names),
-// palette everforest_soft (lvim-gtk palettes and the lvim-gtk-select
-// argument), and the GTK build name Lvim-EverforestSoft, which only
-// lvim-gtk-select needs and derives itself.
+// palette everforest_soft (the lvim-gtk palettes), and the GTK build name
+// Lvim-EverforestSoft, which is the directory it installs under.
 type Theme struct {
 	Name    string // canonical: LvimEverforest_soft
 	Family  string // everforest
@@ -33,8 +32,27 @@ type Theme struct {
 	Inline Palette
 }
 
-// GTKArg is what lvim-gtk-select takes on its command line.
+// GTKArg is the palette basename: everforest_soft.
 func (t Theme) GTKArg() string { return t.Family + "_" + t.Variant }
+
+// GTKName is the directory the theme installs under in ~/.local/share/themes
+// and the value gtk-theme-name takes: Lvim-EverforestSoft. It is derived, not
+// stored — the same mapping lvim-gtk's theme_name() applies to a palette
+// basename, which drops the underscore and capitalises what followed it.
+func (t Theme) GTKName() string {
+	name := "Lvim-" + capitalise(t.Family)
+	if t.Variant != "" {
+		name += capitalise(t.Variant)
+	}
+	return name
+}
+
+func capitalise(s string) string {
+	if s == "" {
+		return ""
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
 
 // PaletteFile is the theme's palette inside the palettes directory.
 func (t Theme) PaletteFile(palettesDir string) string {
