@@ -277,6 +277,25 @@ func (a *TargetApplier) runOp(op config.Op, t theme.Theme) (string, error) {
 		}
 		return moveAside(expandHome(path), expandHome(dst), op.Unless)
 
+	case config.OpAssemble:
+		sources := make([]string, len(op.Sources))
+		for i, src := range op.Sources {
+			v, err := expand(src)
+			if err != nil {
+				return "", err
+			}
+			sources[i] = expandHome(v)
+		}
+		dst, err := expand(op.Target)
+		if err != nil {
+			return "", err
+		}
+		marker, err := expand(op.Marker)
+		if err != nil {
+			return "", err
+		}
+		return assemble(sources, expandHome(dst), marker)
+
 	case config.OpSignal:
 		return sendSignal(op.Signal, op.Process)
 	}
@@ -470,6 +489,56 @@ func moveAside(path, target, unless string) (string, error) {
 		return "", err
 	}
 	return "moved aside " + shortPath(path), nil
+}
+
+// assemble joins sources into target, in order.
+//
+// It exists because some programs read exactly one file and offer no include:
+// starship and lazydocker both do, so their theme cannot be a file they are
+// pointed at — it has to be glued to the user's own. A shell script did that on
+// every shell start, which is precisely why neither configuration could belong
+// to the user: the product and the parts lived in the same directory and the
+// script rewrote the product.
+//
+// The marker is written first AND is the permission to overwrite: a target that
+// exists without it was written by hand and is left alone. Editing the product
+// instead of the parts is a mistake, but it is not one to answer by destroying
+// the edit.
+func assemble(sources []string, target, marker string) (string, error) {
+	if marker != "" {
+		if old, err := os.ReadFile(target); err == nil && !bytes.Contains(old, []byte(marker)) {
+			return "kept " + shortPath(target) + " (not assembled by us)", nil
+		}
+	}
+
+	var out bytes.Buffer
+	if marker != "" {
+		out.WriteString(marker + "\n")
+	}
+	for _, src := range sources {
+		b, err := os.ReadFile(src)
+		if err != nil {
+			return "", fmt.Errorf("assembling %s: %w", shortPath(target), err)
+		}
+		out.Write(b)
+		// Joined with a newline where a part does not end in one, or the last
+		// line of one file and the first of the next become a single line.
+		if n := len(b); n > 0 && b[n-1] != '\n' {
+			out.WriteByte('\n')
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return "", err
+	}
+	tmp := target + ".tmp"
+	if err := os.WriteFile(tmp, out.Bytes(), 0o644); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		return "", err
+	}
+	return "assembled " + shortPath(target) + fmt.Sprintf(" (%d parts)", len(sources)), nil
 }
 
 // link points dst at src, replacing only what this tool may replace.

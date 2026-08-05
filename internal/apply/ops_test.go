@@ -582,3 +582,106 @@ func TestTildeExpandsInCommandArguments(t *testing.T) {
 		t.Errorf("the command did not run with expanded paths: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// assemble
+// ---------------------------------------------------------------------------
+
+func TestAssembleJoinsThePartsInOrder(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a"), []byte("first\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "LvimEverforest_soft.part"), []byte("second\n"), 0o644)
+	dst := filepath.Join(dir, "out", "joined")
+
+	if _, err := opTarget(config.Op{
+		Kind:    config.OpAssemble,
+		Sources: []string{filepath.Join(dir, "a"), filepath.Join(dir, "{theme}.part")},
+		Target:  dst,
+	}).Apply(testTheme); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, dst); got != "first\nsecond\n" {
+		t.Errorf("assembled = %q, want the parts in order", got)
+	}
+}
+
+// A part that does not end in a newline must not run into the next one: the
+// last line of the user's config and the first of the palette would become a
+// single, broken line.
+func TestAssembleSeparatesPartsThatLackATrailingNewline(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a"), []byte("theme:"), 0o644)
+	os.WriteFile(filepath.Join(dir, "b"), []byte("  fg: red\n"), 0o644)
+	dst := filepath.Join(dir, "out")
+
+	if _, err := opTarget(config.Op{
+		Kind: config.OpAssemble, Sources: []string{filepath.Join(dir, "a"), filepath.Join(dir, "b")}, Target: dst,
+	}).Apply(testTheme); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, dst); got != "theme:\n  fg: red\n" {
+		t.Errorf("assembled = %q, want the parts on separate lines", got)
+	}
+}
+
+// The marker is the permission to overwrite. A file someone wrote by hand does
+// not carry it, and editing the product instead of the parts is a mistake that
+// must not be answered by destroying the edit.
+func TestAssembleLeavesAHandWrittenTargetAlone(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a"), []byte("generated\n"), 0o644)
+	dst := filepath.Join(dir, "out")
+	os.WriteFile(dst, []byte("mine, edited by hand\n"), 0o644)
+
+	note, err := opTarget(config.Op{
+		Kind: config.OpAssemble, Sources: []string{filepath.Join(dir, "a")},
+		Target: dst, Marker: "# ASSEMBLED",
+	}).Apply(testTheme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, dst); got != "mine, edited by hand\n" {
+		t.Errorf("the hand-written file was replaced: %q", got)
+	}
+	if !strings.Contains(note, "kept") {
+		t.Errorf("note = %q, want it to say the file was kept", note)
+	}
+}
+
+// Its own previous output does carry the marker, so a second switch replaces it.
+func TestAssembleReplacesItsOwnPreviousOutput(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a"), []byte("new\n"), 0o644)
+	dst := filepath.Join(dir, "out")
+	os.WriteFile(dst, []byte("# ASSEMBLED\nold\n"), 0o644)
+
+	if _, err := opTarget(config.Op{
+		Kind: config.OpAssemble, Sources: []string{filepath.Join(dir, "a")},
+		Target: dst, Marker: "# ASSEMBLED",
+	}).Apply(testTheme); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, dst); got != "# ASSEMBLED\nnew\n" {
+		t.Errorf("assembled = %q, want it replaced and marked", got)
+	}
+}
+
+// A missing part is a failure, not a shorter file: half a configuration reads
+// as a working one.
+func TestAssembleFailsOnAMissingPartAndKeepsThePrevious(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a"), []byte("first\n"), 0o644)
+	dst := filepath.Join(dir, "out")
+	os.WriteFile(dst, []byte("# ASSEMBLED\nprevious\n"), 0o644)
+
+	_, err := opTarget(config.Op{
+		Kind: config.OpAssemble, Sources: []string{filepath.Join(dir, "a"), filepath.Join(dir, "absent")},
+		Target: dst, Marker: "# ASSEMBLED",
+	}).Apply(testTheme)
+	if err == nil {
+		t.Fatal("a missing part was accepted")
+	}
+	if got := read(t, dst); got != "# ASSEMBLED\nprevious\n" {
+		t.Errorf("the previous output was destroyed: %q", got)
+	}
+}

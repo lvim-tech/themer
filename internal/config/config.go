@@ -91,6 +91,7 @@ const (
 	OpCopy      = "copy"       // copy one file, optionally keeping what was there
 	OpSetLine   = "set-line"   // set a key=value line in an ini-shaped file
 	OpMoveAside = "move-aside" // get somebody else's file out of the way
+	OpAssemble  = "assemble"   // join several files into one
 	OpSignal    = "signal"     // send a signal to every process of a name
 )
 
@@ -128,6 +129,20 @@ type Op struct {
 	Section string `toml:"section,omitempty"` // set-line
 	// Regex is the line set-line replaces when it is already there.
 	Regex string `toml:"regex,omitempty"` // set-line
+	// Sources are the files assemble joins, in order.
+	//
+	// Some programs read exactly one file and offer no include: starship and
+	// lazydocker both do. Their theme is therefore not a file they can be
+	// pointed at but a fragment that has to be glued to the user's own — which
+	// a shell script did on every shell start, and which is why neither
+	// configuration could belong to the user.
+	Sources []string `toml:"sources,omitempty"` // assemble
+	// Marker is written as the first line of an assembled file, and is the
+	// PERMISSION to overwrite it: a target that exists without the marker was
+	// written by hand and is left alone. Without it an assemble would destroy
+	// a configuration the moment someone decided to edit the product instead
+	// of the parts.
+	Marker string `toml:"marker,omitempty"` // assemble
 
 	// Optional lets an operation fail without failing the target.
 	//
@@ -177,6 +192,11 @@ func (o Op) Validate(target string) error {
 		return need(o.Value != "", "value")
 	case OpMoveAside:
 		if err := need(o.File != "", "file"); err != nil {
+			return err
+		}
+		return need(o.Target != "", "target")
+	case OpAssemble:
+		if err := need(len(o.Sources) > 0, "sources"); err != nil {
 			return err
 		}
 		return need(o.Target != "", "target")
