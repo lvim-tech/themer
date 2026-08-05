@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/lvim-tech/themer/internal/config"
+	"github.com/lvim-tech/themer/internal/theme"
 )
 
 // opTarget builds an applier over a bare operation list, with no detect rule
@@ -745,5 +746,46 @@ func TestJSONSetRefusesToWalkThroughAScalar(t *testing.T) {
 	}
 	if got := read(t, path); got != `{"theme":"One Light"}` {
 		t.Errorf("the document was rewritten: %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// appearance
+// ---------------------------------------------------------------------------
+
+// {appearance} exists because everything that asks the question knows two
+// answers while a theme has four variants. The case that matters is `soft`:
+// {variant} would write the word "soft" into a setting whose only legal values
+// are dark and light, which is how a config comes to be silently invalid.
+func TestAppearanceReducesTheFourVariantsToTwo(t *testing.T) {
+	for _, c := range []struct {
+		variant string
+		want    string
+	}{
+		{"dark", "dark"},
+		{"darker", "dark"},
+		{"soft", "dark"},
+		{"light", "light"},
+	} {
+		got, err := expandTheme("prefer-{appearance}", theme.Theme{
+			Name: "LvimNord_" + c.variant, Family: "nord", Variant: c.variant,
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", c.variant, err)
+		}
+		if want := "prefer-" + c.want; got != want {
+			t.Errorf("%s expanded to %q, want %q", c.variant, got, want)
+		}
+	}
+}
+
+// The capitalised form, for the settings that spell it that way.
+func TestAppearanceCapitalisesLikeTheOtherPlaceholders(t *testing.T) {
+	got, err := expandTheme("{Appearance}", testTheme) // LvimEverforest_soft
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Dark" {
+		t.Errorf("{Appearance} = %q, want %q", got, "Dark")
 	}
 }

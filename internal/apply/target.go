@@ -707,15 +707,38 @@ func expandTheme(tpl string, t theme.Theme) (string, error) {
 			return t.Variant
 		case "Variant":
 			return capitalise(t.Variant)
+		case "appearance":
+			return appearance(t.Variant)
+		case "Appearance":
+			return capitalise(appearance(t.Variant))
 		default:
 			missing = key
 		}
 		return m
 	})
 	if missing != "" {
-		return "", fmt.Errorf("unknown placeholder {%s}: {theme}, {family}, {Family}, {variant} and {Variant} are expanded", missing)
+		return "", fmt.Errorf("unknown placeholder {%s}: {theme}, {family}, {Family}, {variant}, {Variant}, {appearance} and {Appearance} are expanded", missing)
 	}
 	return out, nil
+}
+
+// A theme has four variants; everything that asks about appearance knows two.
+// GNOME's color-scheme takes prefer-dark or prefer-light, zed's theme mode
+// takes dark or light, and the portal reports one of those two — none of them
+// has a word for `darker` or `soft`.
+//
+// MEASURED on the Nord family, whose backgrounds are #21262f dark, #1b1f26
+// darker, #262b36 soft and #dfdfdf light: only `light` is light. The three
+// others differ from one another in the neutrals alone, never in which side of
+// the line they sit on.
+//
+// An unknown variant counts as dark because every family here is built dark
+// with one light variant, so dark is the answer that is right by default.
+func appearance(variant string) string {
+	if variant == "light" {
+		return "light"
+	}
+	return "dark"
 }
 
 func capitalise(s string) string {
