@@ -12,45 +12,6 @@ import (
 	"github.com/lvim-tech/themer/internal/theme"
 )
 
-// Wezterm renames the active color_scheme — and only that. This machine's
-// wezterm.lua deliberately runs on `colors = custom` with the color_scheme
-// line commented out; overriding a hand-built palette from a switcher would
-// be exactly the wrong kind of help, so that configuration is a Skip with
-// its reason spelled out. Wezterm watches its config file, so a rewrite is
-// also the reload.
-type Wezterm struct{ conf string }
-
-func NewWezterm() *Wezterm {
-	home, _ := os.UserHomeDir()
-	return &Wezterm{conf: filepath.Join(home, ".config", "wezterm", "wezterm.lua")}
-}
-func (w *Wezterm) Name() string { return "wezterm" }
-
-// An active (uncommented) assignment; the commented form starts with --.
-var weztermScheme = regexp.MustCompile(`(?m)^(\s*)color_scheme(\s*)=(\s*)"[^"]*"`)
-
-func (w *Wezterm) Detect() (bool, string) {
-	b, err := os.ReadFile(w.conf)
-	if err != nil {
-		return false, "no " + w.conf
-	}
-	if !weztermScheme.Match(b) {
-		return false, "runs on a hand-built palette (colors = custom), left alone"
-	}
-	return true, ""
-}
-func (w *Wezterm) Apply(t theme.Theme, _ theme.Palette) (string, error) {
-	b, err := os.ReadFile(w.conf)
-	if err != nil {
-		return "", err
-	}
-	out := weztermScheme.ReplaceAllString(string(b), `${1}color_scheme${2}=${3}"`+t.Name+`"`)
-	if err := os.WriteFile(w.conf, []byte(out), 0o644); err != nil {
-		return "", err
-	}
-	return "color_scheme → " + t.Name, nil
-}
-
 // GTK switches the desktop half. Only the GTK4 stylesheet is copied;
 // GTK2, GTK3 and the window decorations are chosen BY NAME out of
 // ~/.local/share/themes/<name>/ and never move. libadwaita is the exception
@@ -97,7 +58,7 @@ func (g *GTK) Detect() (bool, string) {
 	return false, "no Lvim-* theme in " + shortPath(g.themes)
 }
 
-func (g *GTK) Apply(t theme.Theme, _ theme.Palette) (string, error) {
+func (g *GTK) Apply(t theme.Theme) (string, error) {
 	name := t.GTKName()
 	src := filepath.Join(g.themes, name)
 	if fi, err := os.Stat(src); err != nil || !fi.IsDir() {

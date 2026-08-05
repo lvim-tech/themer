@@ -23,10 +23,6 @@ const (
 	screenApply
 )
 
-// swatchKeys are the palette colours previewed beside each theme name, in
-// terminal order. bg leads so the darkness of the variant reads first.
-var swatchKeys = []string{"bg", "fg", "red", "orange", "yellow", "green", "teal", "cyan", "blue", "purple", "magenta"}
-
 type item struct {
 	t       theme.Theme
 	current bool
@@ -34,6 +30,17 @@ type item struct {
 }
 
 func (i item) FilterValue() string { return i.t.Name }
+
+// swatchFor renders the preview blocks from the colours the published list
+// carried. A theme whose line named none simply shows nothing — the list
+// belongs to the generator, and a picker is in no position to insist.
+func swatchFor(t theme.Theme) string {
+	var b strings.Builder
+	for _, hex := range t.Swatch {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render("● "))
+	}
+	return b.String()
+}
 
 // itemDelegate renders one theme per line: marker, name, swatches. The
 // swatch row is precomputed — 48 themes × a redraw per keystroke is not
@@ -124,7 +131,7 @@ func New(cfg config.Config, themes []theme.Theme) Model {
 	l.Paginator.InactiveDot = dimStyle.Render("○ ")
 	items := make([]item, len(themes))
 	for i, t := range themes {
-		items[i] = item{t: t, current: t.Name == current, swatch: swatchFor(cfg, t)}
+		items[i] = item{t: t, current: t.Name == current, swatch: swatchFor(t)}
 	}
 	m := Model{cfg: cfg, themes: themes, list: l, current: current, items: items, families: families}
 	m.setTab(0)
@@ -157,23 +164,6 @@ func (m *Model) setTab(tab int) {
 	m.list.SetItems(visible)
 	m.list.ResetSelected()
 	m.selectCurrent() // a tab that holds the active theme opens on it
-}
-
-// swatchFor renders the preview blocks. A palette that fails to load shows
-// as an empty swatch rather than a startup error: one broken generated file
-// must not take the whole list down.
-func swatchFor(cfg config.Config, t theme.Theme) string {
-	p, err := theme.Load(t, cfg.PalettesDir)
-	if err != nil {
-		return dimStyle.Render("palette unreadable")
-	}
-	var b strings.Builder
-	for _, key := range swatchKeys {
-		if hex, ok := p[key]; ok {
-			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render("● "))
-		}
-	}
-	return strings.TrimRight(b.String(), " ")
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -253,11 +243,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startApply(t theme.Theme) (tea.Model, tea.Cmd) {
-	p, err := theme.Load(t, m.cfg.PalettesDir)
-	if err != nil {
-		m.err = err
-		return m, nil
-	}
 	m.target = t
 	m.appliers = apply.All(m.cfg)
 	m.results = make([]apply.Result, len(m.appliers))
@@ -268,7 +253,7 @@ func (m Model) startApply(t theme.Theme) (tea.Model, tea.Cmd) {
 	m.applying = true
 	m.err = nil
 	m.events = make(chan apply.Result)
-	go apply.Run(m.appliers, t, p, m.events)
+	go apply.Run(m.appliers, t, m.events)
 	return m, waitForResult(m.events)
 }
 

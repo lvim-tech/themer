@@ -8,75 +8,84 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	toml "github.com/pelletier/go-toml/v2"
 )
 
-// The whole round trip against a fake GitHub: list the directory, download
-// each palette, and land a themes.toml that parses back into the same
-// colours.
-func TestRunWritesAParsableThemesFile(t *testing.T) {
-	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
+func TestRunWritesTheNamesSorted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "# generated\nLvimNord_soft\n\nLvimEverforest_dark\n")
+	}))
 	defer srv.Close()
 
-	mux.HandleFunc("/repos/lvim-tech/lvim-gtk/contents/palettes", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, `[
-			{"name": "everforest_soft.scss", "download_url": %q},
-			{"name": "README.md", "download_url": %q}
-		]`, srv.URL+"/raw/everforest_soft.scss", srv.URL+"/raw/README.md")
-	})
-	mux.HandleFunc("/raw/everforest_soft.scss", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, "$style: 'everforest_soft';\n$bg: #2F383E;\n$red: #cb4f4f;\n")
-	})
-
-	dest := filepath.Join(t.TempDir(), "themes.toml")
-	n, err := Run(srv.URL, "lvim-tech/lvim-gtk", dest)
+	dest := filepath.Join(t.TempDir(), "sub", "themes.txt")
+	n, err := Run(srv.URL, dest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("synced %d themes, want 1 — the README must not become a theme", n)
+	if n != 2 {
+		t.Errorf("n = %d, want 2", n)
 	}
-
-	b, err := os.ReadFile(dest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got struct {
-		Themes []struct {
-			Name    string            `toml:"name"`
-			Palette map[string]string `toml:"palette"`
-		} `toml:"themes"`
-	}
-	if err := toml.Unmarshal(b, &got); err != nil {
-		t.Fatalf("the generated file does not parse: %v\n%s", err, b)
-	}
-	if len(got.Themes) != 1 || got.Themes[0].Name != "LvimEverforest_soft" {
-		t.Fatalf("wrong themes: %+v", got.Themes)
-	}
-	if got.Themes[0].Palette["bg"] != "#2f383e" {
-		t.Errorf("bg = %q, want the lowercased scss value", got.Themes[0].Palette["bg"])
-	}
-	if !strings.Contains(string(b), "GENERATED") {
-		t.Error("the file does not say it is generated")
+	// Sorted here rather than trusted from the wire, so --list has the same
+	// order whatever the generator happened to emit.
+	if got := read(t, dest); got != "LvimEverforest_dark\nLvimNord_soft\n" {
+		t.Errorf("list = %q", got)
 	}
 }
 
-// A dead download must leave no half-written themes.toml behind.
-func TestRunLeavesNoFileOnFailure(t *testing.T) {
-	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
+// A sync that fails must leave the previous list intact: without it themer has
+// no themes at all, which is worse than an out-of-date list.
+func TestRunLeavesTheOldListOnFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusNotFound)
+	}))
 	defer srv.Close()
-	mux.HandleFunc("/repos/x/y/contents/palettes", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, `[{"name": "a_b.scss", "download_url": %q}]`, srv.URL+"/gone")
-	})
 
-	dest := filepath.Join(t.TempDir(), "themes.toml")
-	if _, err := Run(srv.URL, "x/y", dest); err == nil {
-		t.Fatal("a 404 download passed silently")
+	dest := filepath.Join(t.TempDir(), "themes.txt")
+	if err := os.WriteFile(dest, []byte("LvimNord_dark\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(dest); !os.IsNotExist(err) {
-		t.Error("a failed sync left a themes.toml behind")
+
+	if _, err := Run(srv.URL, dest); err == nil {
+		t.Fatal("a 404 was accepted as a theme list")
 	}
+	if got := read(t, dest); got != "LvimNord_dark\n" {
+		t.Errorf("the previous list was destroyed: %q", got)
+	}
+	if _, err := os.Stat(dest + ".tmp"); err == nil {
+		t.Error("the temporary file was left behind")
+	}
+}
+
+// An empty body is far more likely a redirect or an error page than a
+// generator with no themes, and writing it out would empty a working install.
+func TestRunRefusesAnEmptyAnswer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "\n\n# nothing\n")
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "themes.txt")
+	if _, err := Run(srv.URL, dest); err == nil {
+		t.Fatal("an empty list was accepted")
+	}
+	if _, err := os.Stat(dest); err == nil {
+		t.Error("an empty list was written anyway")
+	}
+}
+
+// themer ships no themes, so an unconfigured URL is the normal first-run state
+// and has to say so rather than fetching nothing from nowhere.
+func TestRunWithoutAURLSaysSo(t *testing.T) {
+	_, err := Run("", filepath.Join(t.TempDir(), "themes.txt"))
+	if err == nil || !strings.Contains(err.Error(), "themes_url") {
+		t.Errorf("error = %v, want it to name themes_url", err)
+	}
+}
+
+func read(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

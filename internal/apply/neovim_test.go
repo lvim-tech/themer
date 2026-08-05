@@ -34,7 +34,7 @@ const liveSettings = `{"dim_inactive":true,"sidebars":"dark","colorscheme":"lvim
 // the theme that was just switched away from.
 func TestNeovimWritesTheMirrorAndTheDocument(t *testing.T) {
 	n := newTestNeovim(t, liveSettings)
-	if _, err := n.Apply(testTheme, testPalette); err != nil {
+	if _, err := n.Apply(testTheme); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +54,7 @@ func TestNeovimWritesTheMirrorAndTheDocument(t *testing.T) {
 // rewrite that keeps only the key we came for silently resets the rest.
 func TestNeovimLeavesTheOtherSettingsAlone(t *testing.T) {
 	n := newTestNeovim(t, liveSettings)
-	if _, err := n.Apply(testTheme, testPalette); err != nil {
+	if _, err := n.Apply(testTheme); err != nil {
 		t.Fatal(err)
 	}
 
@@ -75,7 +75,7 @@ func TestNeovimRefusesAnUnparsableDocumentAndLeavesTheMirror(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := n.Apply(testTheme, testPalette); err == nil {
+	if _, err := n.Apply(testTheme); err == nil {
 		t.Fatal("Apply = nil, want an error for an unparsable settings.json")
 	}
 	if got := read(t, filepath.Join(n.dir, "settings.json")); got != "{ this is not json" {
@@ -89,7 +89,7 @@ func TestNeovimRefusesAnUnparsableDocumentAndLeavesTheMirror(t *testing.T) {
 // A fresh install has persisted nothing yet; the switch still has to land.
 func TestNeovimWritesADocumentThatDoesNotExistYet(t *testing.T) {
 	n := newTestNeovim(t, "")
-	if _, err := n.Apply(testTheme, testPalette); err != nil {
+	if _, err := n.Apply(testTheme); err != nil {
 		t.Fatal(err)
 	}
 
@@ -139,26 +139,23 @@ func TestNeovimIsAmongTheAppliers(t *testing.T) {
 	t.Error("All() has no neovim applier")
 }
 
-// The mapping itself, over every palette this machine carries: the palette
-// basenames are the only input, and lvim-colorscheme's colors/*.lua is the
-// answer. Skipped rather than failed where the checkouts are absent — this
+// The mapping itself, over every theme the generator publishes: the names in
+// extras/themes.txt are the only input, and lvim-colorscheme's own colors/*.lua
+// is the answer. Skipped rather than failed where the checkout is absent — this
 // guards against drift, it is not a reason CI cannot run.
 func TestNvimNamesMatchTheInstalledColorschemes(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip(err)
 	}
-	palettes, err := theme.Discover(filepath.Join(home, "lvim-tech", "lvim-gtk", "palettes"))
+	repo := filepath.Join(home, "lvim-tech", "lvim-colorscheme")
+	themes, err := theme.Discover(filepath.Join(repo, "extras", "themes.txt"))
 	if err != nil {
-		t.Skipf("no palettes to check against: %v", err)
-	}
-	colors := filepath.Join(home, "lvim-tech", "lvim-colorscheme", "colors")
-	if _, err := os.Stat(colors); err != nil {
-		t.Skipf("no colorschemes to check against: %v", err)
+		t.Skipf("no published theme list to check against: %v", err)
 	}
 
-	for _, th := range palettes {
-		file := filepath.Join(colors, th.NvimName()+".lua")
+	for _, th := range themes {
+		file := filepath.Join(repo, "colors", th.NvimName()+".lua")
 		if _, err := os.Stat(file); err != nil {
 			t.Errorf("%s → %s, but %s does not exist", th.Name, th.NvimName(), shortPath(file))
 		}

@@ -6,116 +6,104 @@ import (
 	"testing"
 )
 
-func writePalette(t *testing.T, dir, name, body string) {
+func writeList(t *testing.T, body string) string {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+	path := filepath.Join(t.TempDir(), "themes.txt")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	return path
+}
+
+// The list carries canonical names; family and variant are derived from them,
+// because GTKName and NvimName are built out of those two parts.
+func TestDiscoverSplitsTheCanonicalNames(t *testing.T) {
+	path := writeList(t, "LvimEverforest_soft\nLvimNord_dark\nLvimLvim_darker\n")
+
+	got, err := Discover(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("themes = %d, want 3", len(got))
+	}
+	// Sorted, so the picker and --list do not reorder between runs.
+	if got[0].Name != "LvimEverforest_soft" || got[2].Name != "LvimNord_dark" {
+		t.Errorf("order = %q … %q, want them sorted", got[0].Name, got[2].Name)
+	}
+	if got[0].Family != "everforest" || got[0].Variant != "soft" {
+		t.Errorf("split = %q/%q, want everforest/soft", got[0].Family, got[0].Variant)
 	}
 }
 
-const sample = `// generated
-$style:         'everforest_soft';
+// Blank lines and comments are skipped: the list comes from a generator that
+// may well start annotating it, and a stray "#" must not become a theme.
+func TestDiscoverSkipsBlanksAndComments(t *testing.T) {
+	path := writeList(t, "# generated\n\nLvimNord_dark\n\n  \nLvimNord_soft\n")
 
-$bg:             #2F383E;
-$green-dark:     #656831;
-$red:            #cb4f4f;
-not a colour line
-$terminal-bg:    #262f34;
-`
-
-func TestDiscoverBuildsCanonicalNames(t *testing.T) {
-	dir := t.TempDir()
-	writePalette(t, dir, "everforest_soft.scss", sample)
-	writePalette(t, dir, "rosepine_dark.scss", sample)
-	writePalette(t, dir, "README.md", "not a palette")
-
-	themes, err := Discover(dir)
+	got, err := Discover(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(themes) != 2 {
-		t.Fatalf("expected 2 themes, got %d", len(themes))
-	}
-	// Rosepine, not RosePine: the families were checked against the 48
-	// kitty extras — plain title-casing is the real mapping.
-	if themes[0].Name != "LvimEverforest_soft" || themes[1].Name != "LvimRosepine_dark" {
-		t.Fatalf("wrong names: %s, %s", themes[0].Name, themes[1].Name)
-	}
-	if themes[0].GTKArg() != "everforest_soft" {
-		t.Fatalf("wrong gtk arg: %s", themes[0].GTKArg())
+	if len(got) != 2 {
+		t.Errorf("themes = %d, want only the two names", len(got))
 	}
 }
 
-func TestFromConfigParsesTheNameAndNormalisesColours(t *testing.T) {
-	th := FromConfig("LvimCustom_dark", map[string]string{"bg": " 1E1E2E", "red": "#CB4F4F"})
-	if th.Family != "custom" || th.Variant != "dark" {
-		t.Errorf("canonical name parsed as %q/%q", th.Family, th.Variant)
+// A name outside the scheme becomes its own family rather than being dropped:
+// the list belongs to the generator, and themer is in no position to rule a
+// name it publishes invalid.
+func TestDiscoverKeepsANameOutsideTheScheme(t *testing.T) {
+	got, err := Discover(writeList(t, "Solarized\n"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Bare rrggbb gains its #, case folds — the same shape LoadPalette makes.
-	if th.Inline["bg"] != "#1e1e2e" || th.Inline["red"] != "#cb4f4f" {
-		t.Errorf("colours not normalised: %v", th.Inline)
+	if len(got) != 1 || got[0].Name != "Solarized" {
+		t.Fatalf("themes = %v, want the name kept", got)
 	}
-	// A free-form name still works: its own family, so it gets its own tab.
-	if free := FromConfig("MyThing", nil); free.Family != "mything" {
-		t.Errorf("free-form family = %q", free.Family)
+	if got[0].Family != "solarized" || got[0].Variant != "" {
+		t.Errorf("split = %q/%q, want the whole name as the family", got[0].Family, got[0].Variant)
 	}
 }
 
-// A config theme with a known name replaces the file theme, and Load then
-// prefers the inline palette — the file is never opened for it again.
-func TestMergeReplacesByNameAndLoadPrefersInline(t *testing.T) {
-	dir := t.TempDir()
-	writePalette(t, dir, "everforest_soft.scss", sample)
-	themes, err := Discover(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	override := FromConfig("LvimEverforest_soft", map[string]string{"bg": "#000000"})
-	themes = Merge(themes, []Theme{override, FromConfig("LvimCustom_dark", map[string]string{"bg": "#111111"})})
-	if len(themes) != 2 {
-		t.Fatalf("merge produced %d themes, want 2", len(themes))
-	}
-
-	got, ok := ByName(themes, "LvimEverforest_soft")
-	if !ok {
-		t.Fatal("the overridden theme vanished")
-	}
-	p, err := Load(got, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p["bg"] != "#000000" {
-		t.Errorf("Load read the file (%q), not the inline palette", p["bg"])
-	}
-
-	// The file theme still loads from disk when no inline palette exists.
-	plain, _ := ByName([]Theme{{Name: "LvimEverforest_soft", Family: "everforest", Variant: "soft"}}, "LvimEverforest_soft")
-	p, err = Load(plain, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p["bg"] != "#2f383e" {
-		t.Errorf("file palette read wrong: %q", p["bg"])
+// An empty list is a failure, not an empty picker: it means the fetch answered
+// with something that was not the list.
+func TestDiscoverRejectsAnEmptyList(t *testing.T) {
+	if _, err := Discover(writeList(t, "# only a comment\n")); err == nil {
+		t.Error("a list naming no themes was accepted")
 	}
 }
 
-func TestLoadPaletteReadsColoursAndNormalises(t *testing.T) {
-	dir := t.TempDir()
-	writePalette(t, dir, "everforest_soft.scss", sample)
+func TestDiscoverReportsAMissingList(t *testing.T) {
+	if _, err := Discover(filepath.Join(t.TempDir(), "absent.txt")); err == nil {
+		t.Error("a missing list was accepted")
+	}
+}
 
-	p, err := LoadPalette(filepath.Join(dir, "everforest_soft.scss"))
-	if err != nil {
-		t.Fatal(err)
+func TestGTKAndNvimNamesAreDerived(t *testing.T) {
+	tests := []struct{ name, gtk, nvim string }{
+		{"LvimEverforest_soft", "Lvim-EverforestSoft", "lvim-everforest-soft"},
+		// The house palette is lvim_dark and its colorscheme is lvim-dark:
+		// the family is dropped when it IS lvim.
+		{"LvimLvim_dark", "Lvim-LvimDark", "lvim-dark"},
 	}
-	// $style is quoted, not a colour; case folds so templates can rely on it.
-	if _, ok := p["style"]; ok {
-		t.Error("$style leaked into the palette")
+	for _, tt := range tests {
+		got := FromName(tt.name)
+		if got.GTKName() != tt.gtk {
+			t.Errorf("%s: GTKName = %q, want %q", tt.name, got.GTKName(), tt.gtk)
+		}
+		if got.NvimName() != tt.nvim {
+			t.Errorf("%s: NvimName = %q, want %q", tt.name, got.NvimName(), tt.nvim)
+		}
 	}
-	if p["bg"] != "#2f383e" {
-		t.Errorf("bg = %q, want lowercased #2f383e", p["bg"])
+}
+
+func TestByNameFindsAndMisses(t *testing.T) {
+	themes := []Theme{FromName("LvimNord_dark"), FromName("LvimNord_soft")}
+	if _, ok := ByName(themes, "LvimNord_soft"); !ok {
+		t.Error("a theme that is in the list was not found")
 	}
-	if p["green-dark"] != "#656831" || p["terminal-bg"] != "#262f34" {
-		t.Errorf("hyphenated keys parsed wrong: %v", p)
+	if _, ok := ByName(themes, "LvimNord_light"); ok {
+		t.Error("a theme that is not in the list was found")
 	}
 }

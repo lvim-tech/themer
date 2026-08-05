@@ -47,7 +47,7 @@ func (n *Neovim) Detect() (bool, string) {
 	return true, ""
 }
 
-func (n *Neovim) Apply(t theme.Theme, _ theme.Palette) (string, error) {
+func (n *Neovim) Apply(t theme.Theme) (string, error) {
 	name := t.NvimName()
 	// Document first, mirror second — the plugin's order. Reversed, a failure
 	// here would leave the mirror already switched and load_theme answering

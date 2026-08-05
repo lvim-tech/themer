@@ -12,56 +12,173 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
 )
 
 type Config struct {
-	// PalettesDir is the generated lvim-gtk palette directory — the single
-	// source both the theme list and every colour come from.
-	PalettesDir string `toml:"palettes"`
-	// StateFile is the file the whole ecosystem reads $THEME from.
+	// StateFile is the file this setup reads $THEME from — themer marks the
+	// current theme by reading it. WRITING it is a target like any other, so
+	// there is no default here: another setup may keep it elsewhere, or have
+	// none, and themer would then simply not know which theme is active.
 	StateFile string `toml:"state_file"`
-	// ClipackBase is clipack's base directory (bin/, configs/).
-	ClipackBase string `toml:"clipack_base"`
-	// PalettesRepo is the GitHub repository (owner/name) `themer --sync`
-	// pulls the palettes from into themes.toml.
-	PalettesRepo string `toml:"palettes_repo"`
-	// Roles maps a desktop role (focus, border, urgent, …) to a palette key.
-	Roles map[string]string `toml:"roles"`
+	// PathDir is prepended to PATH for everything themer runs.
+	//
+	// Started from a shell the tools are already there; started from a
+	// COMPOSITOR keybind — which is how themer is normally reached — the
+	// environment carries only the login PATH, and tools installed outside it
+	// were simply not found. The appliers then failed on a machine where the
+	// same switch worked perfectly from a terminal.
+	PathDir string `toml:"path_dir"`
+	// ThemesURL is the plain list of theme names, one per line, that
+	// `themer --sync` fetches. themer holds no colours of its own: every
+	// target now downloads a file generated for it, so all that is left to
+	// know is WHICH themes exist. There is no default — the list belongs to
+	// whoever generates the themes, not to this program.
+	ThemesURL string `toml:"themes_url"`
 	// Targets are the declarative appliers: what to detect, which lines to
 	// rewrite, what to reload. The three compositors ship as defaults; a
 	// config target with the same name replaces its default, a new name is
 	// appended. Anything themeable by a line rewrite plus a reload command
 	// belongs here, not in Go.
 	Targets []Target `toml:"targets"`
-	// Themes are palettes defined as values right here instead of files: a
-	// new name adds a theme, a known one replaces the file palette. Only
-	// what reads the palette follows automatically — appliers that need a
-	// per-theme file (kitty, tmux, waybar) still fail loudly until that
-	// file exists too.
-	Themes []ThemeDef `toml:"themes"`
 }
 
-// ThemeDef is one inline theme: a name and its colours.
-type ThemeDef struct {
-	Name    string            `toml:"name"`
-	Palette map[string]string `toml:"palette"`
-}
-
-// Target is one declarative applier.
+// Target is one declarative applier: what to detect, then an ordered list of
+// operations to carry out.
+//
+// Edits and Reload are the older, narrower spelling. They are desugared into
+// Ops at load, so there is ONE execution path — a second one would drift, and
+// the two would disagree about ordering the first time a target needed a
+// command between two rewrites.
 type Target struct {
 	Name   string   `toml:"name"`
 	Detect Detect   `toml:"detect"`
-	Edits  []Edit   `toml:"edit"`
-	Reload []Reload `toml:"reload"`
+	Ops    []Op     `toml:"op,omitempty"`
+	Edits  []Edit   `toml:"edit,omitempty"`
+	Reload []Reload `toml:"reload,omitempty"`
+}
+
+// Operation kinds. Everything a target can do is one of these; nothing about
+// a particular program belongs in Go.
+const (
+	OpRewrite  = "rewrite"   // regex replacement over the lines of a file
+	OpFetch    = "fetch"     // download source into target, both templated
+	OpLink     = "link"      // symlink target → source, both templated
+	OpWrite    = "write"     // write a file from a templated string
+	OpCommand  = "command"   // run a command, optionally with extra environment
+	OpJSONSet  = "json-set"  // set one key in a JSON document, leaving the rest
+	OpCopyTree = "copy-tree" // copy a directory tree
+	OpSignal   = "signal"    // send a signal to every process of a name
+)
+
+// Op is one step of a target. Which fields matter depends on Kind; Validate
+// rejects the combinations that do not.
+//
+// Every path and value is a template: {theme} is the canonical theme name,
+// {focus} resolves through the role mapping, {green-dark} straight from the
+// palette.
+type Op struct {
+	Kind string `toml:"kind"`
+
+	File    string   `toml:"file,omitempty"`    // rewrite, write, json-set
+	Rules   []Rule   `toml:"rules,omitempty"`   // rewrite
+	Content string   `toml:"content,omitempty"` // write
+	Key     string   `toml:"key,omitempty"`     // json-set
+	Value   string   `toml:"value,omitempty"`   // json-set
+	Source  string   `toml:"source,omitempty"`  // link, copy-tree
+	Target  string   `toml:"target,omitempty"`  // link, copy-tree
+	Command []string `toml:"command,omitempty"` // command
+	Env     []string `toml:"env,omitempty"`     // command, as KEY=value
+	Signal  string   `toml:"signal,omitempty"`  // signal
+	Process string   `toml:"process,omitempty"` // signal
+}
+
+// Validate reports an operation that cannot run, naming the target — a
+// missing field is a configuration bug, and finding it at load beats finding
+// it halfway through a theme switch with the desktop already half changed.
+func (o Op) Validate(target string) error {
+	need := func(ok bool, what string) error {
+		if ok {
+			return nil
+		}
+		return fmt.Errorf("target %q: %s operation needs %s", target, o.Kind, what)
+	}
+	switch o.Kind {
+	case OpRewrite:
+		if err := need(o.File != "", "file"); err != nil {
+			return err
+		}
+		return need(len(o.Rules) > 0, "rules")
+	case OpWrite:
+		return need(o.File != "", "file")
+	case OpJSONSet:
+		if err := need(o.File != "", "file"); err != nil {
+			return err
+		}
+		return need(o.Key != "", "key")
+	case OpFetch, OpLink, OpCopyTree:
+		if err := need(o.Source != "", "source"); err != nil {
+			return err
+		}
+		return need(o.Target != "", "target")
+	case OpCommand:
+		return need(len(o.Command) > 0, "command")
+	case OpSignal:
+		if err := need(o.Signal != "", "signal"); err != nil {
+			return err
+		}
+		return need(o.Process != "", "process")
+	case "":
+		return fmt.Errorf("target %q: operation declares no kind", target)
+	default:
+		return fmt.Errorf("target %q: unknown operation kind %q", target, o.Kind)
+	}
+}
+
+// Desugar folds the Edits and Reload spellings into Ops, in the order they
+// have always run: every edit, then every reload.
+func (t Target) Desugar() Target {
+	if len(t.Edits) == 0 && len(t.Reload) == 0 {
+		return t
+	}
+	ops := append([]Op(nil), t.Ops...)
+	for _, e := range t.Edits {
+		ops = append(ops, Op{Kind: OpRewrite, File: e.File, Rules: e.Rules})
+	}
+	for _, r := range t.Reload {
+		switch {
+		case len(r.Command) > 0:
+			ops = append(ops, Op{Kind: OpCommand, Command: r.Command})
+		case r.Signal != "" && r.Process != "":
+			ops = append(ops, Op{Kind: OpSignal, Signal: r.Signal, Process: r.Process})
+		}
+	}
+	t.Ops = ops
+	t.Edits, t.Reload = nil, nil
+	return t
 }
 
 // Detect gates a target: every non-empty field must pass.
 type Detect struct {
-	Running string `toml:"running"` // a process with exactly this name exists
-	File    string `toml:"file"`    // this file exists (~ expands)
-	Command string `toml:"command"` // this command is in PATH
+	Running string `toml:"running,omitempty"` // a process with exactly this name exists
+	File    string `toml:"file,omitempty"`    // this file exists (~ expands)
+	Command string `toml:"command,omitempty"` // this command is in PATH
+	// Match is a regex File must contain. It exists because a configuration
+	// can be legitimately out of scope rather than absent — wezterm.lua
+	// running on `colors = custom` with color_scheme commented out is a
+	// hand-built palette, and overriding it from a switcher would be exactly
+	// the wrong kind of help. Without this the rewrite would fail instead,
+	// turning a deliberate choice into an error.
+	Match string `toml:"match,omitempty"`
+	// Reason replaces the generic skip message when Match does not hit.
+	Reason string `toml:"reason,omitempty"`
+	// Always runs the target unconditionally. A few have nothing to detect:
+	// writing the state file every other tool reads is the point, and its
+	// absence is a reason to create it rather than to skip.
+	Always bool `toml:"always,omitempty"`
 }
 
 // Edit rewrites lines of one file. Rule values may hold regex group
@@ -86,186 +203,23 @@ type Reload struct {
 	Process string   `toml:"process"`
 }
 
-// DefaultRoles is the starting point for the compositor colours. Chosen by
-// hue against the hand-tuned mango values of 2026-08: focus was a yellow,
-// border a green, urgent matched $red exactly, scratchpad $green exactly,
-// global $purple exactly. Users tune the rest in config.toml.
-func DefaultRoles() map[string]string {
-	return map[string]string{
-		"focus":          "yellow-dark",
-		"border":         "green-dark",
-		"urgent":         "red",
-		"scratchpad":     "green",
-		"global":         "purple",
-		"maximizescreen": "green",
-		"overlay":        "teal",
-		"root":           "bg-dark",
-	}
-}
+// DefaultTargets is deliberately empty.
+//
+// themer knows no programs. Which file a tool keeps its theme in, which line
+// names it and what to reload are facts about somebody's software, and a
+// built-in list made one person's desktop look like part of the program. The
+// definitions live in ~/.config/themer/targets/, one file per tool, and are
+// carried between machines by whatever manages that directory.
+func DefaultTargets() []Target { return nil }
 
-// DefaultTargets covers the three compositors this machine alternates
-// between, plus waybar. Every regex anchors at line start so the
-// commented-out variants the configs carry (# rootcolor=…,
-// # col.active_border=…) stay untouched.
-func DefaultTargets() []Target {
-	return []Target{
-		{
-			// waybar needs no theme files at all: its theme is thirteen
-			// @define-color lines, so they are written straight from the
-			// palette into a permanent colors.css. current.css (the --style
-			// the compositors launch waybar with, since it freezes that path
-			// at startup) just imports colors.css and the colour-free
-			// structure.css, and never changes again. SIGUSR2 makes a running
-			// bar re-read the chain; with no bar running the edit still
-			// counts and the next launch picks it up.
-			Name:   "waybar",
-			Detect: Detect{File: "~/.config/waybar/colors.css"},
-			Edits: []Edit{{
-				File: "~/.config/waybar/colors.css",
-				Rules: []Rule{
-					{Regex: `^@define-color bg .*;`, Value: "@define-color bg #{bg};"},
-					{Regex: `^@define-color bg_dark .*;`, Value: "@define-color bg_dark #{bg-dark};"},
-					{Regex: `^@define-color fg .*;`, Value: "@define-color fg #{fg};"},
-					{Regex: `^@define-color fg_light .*;`, Value: "@define-color fg_light #{fg-light};"},
-					{Regex: `^@define-color fg_soft_dark .*;`, Value: "@define-color fg_soft_dark #{fg-soft-dark};"},
-					{Regex: `^@define-color red .*;`, Value: "@define-color red #{red};"},
-					{Regex: `^@define-color orange .*;`, Value: "@define-color orange #{orange};"},
-					{Regex: `^@define-color yellow .*;`, Value: "@define-color yellow #{yellow};"},
-					{Regex: `^@define-color green .*;`, Value: "@define-color green #{green};"},
-					{Regex: `^@define-color teal .*;`, Value: "@define-color teal #{teal};"},
-					{Regex: `^@define-color cyan .*;`, Value: "@define-color cyan #{cyan};"},
-					{Regex: `^@define-color cyan_dark .*;`, Value: "@define-color cyan_dark #{cyan-dark};"},
-					{Regex: `^@define-color blue .*;`, Value: "@define-color blue #{blue};"},
-				},
-			}},
-			Reload: []Reload{{Signal: "USR2", Process: "waybar"}},
-		},
-		{
-			// alacritty live-reloads its config, so there is no reload step —
-			// rewriting the import is the whole job. The rule keeps whatever
-			// directory the import already points at (the colorscheme repo's
-			// extras here, same idea as kitty's include) and swaps only the
-			// file name, so moving the themes means touching the config once,
-			// not this rule.
-			Name:   "alacritty",
-			Detect: Detect{File: "~/.config/alacritty/alacritty.toml"},
-			Edits: []Edit{{
-				File: "~/.config/alacritty/alacritty.toml",
-				Rules: []Rule{
-					{Regex: `^import = \["(.*/)?[^/"]*"\]`, Value: `import = ["${1}{theme}.toml"]`},
-				},
-			}},
-		},
-		{
-			// ghostty picks its theme by NAME from ~/.config/ghostty/themes
-			// and reloads the whole config on SIGUSR2. Detection is by file:
-			// with no window open the edit still lands and the next launch
-			// reads it, same reasoning as waybar. The ^-anchor spares the
-			// commented guidance lines the config carries.
-			Name:   "ghostty",
-			Detect: Detect{File: "~/.config/ghostty/config"},
-			Edits: []Edit{{
-				File: "~/.config/ghostty/config",
-				Rules: []Rule{
-					{Regex: `^theme\s*=.*$`, Value: "theme = {theme}"},
-				},
-			}},
-			Reload: []Reload{{Signal: "USR2", Process: "ghostty"}},
-		},
-		{
-			// k9s picks a skin BY NAME from ~/.config/k9s/skins, so the
-			// switch is one word in its config. The rule rewrites every
-			// `skin:` line, which is deliberate: k9s allows a per-context
-			// skin, and leaving those pinned to the old palette is exactly
-			// the half-themed result this is meant to prevent. No reload —
-			// k9s re-reads the skin itself while running.
-			Name:   "k9s",
-			Detect: Detect{File: "~/.config/k9s/config.yaml"},
-			Edits: []Edit{{
-				File: "~/.config/k9s/config.yaml",
-				Rules: []Rule{
-					{Regex: `^(\s*)skin:\s*.*$`, Value: "${1}skin: {theme}"},
-				},
-			}},
-		},
-		{
-			// btop names its theme in btop.conf and reads that file only at
-			// startup, so there is nothing to signal: the next launch comes
-			// up themed.
-			Name:   "btop",
-			Detect: Detect{File: "~/.config/btop/btop.conf"},
-			Edits: []Edit{{
-				File: "~/.config/btop/btop.conf",
-				Rules: []Rule{
-					{Regex: `^color_theme\s*=.*$`, Value: `color_theme = "{theme}"`},
-				},
-			}},
-		},
-		{
-			Name:   "mango",
-			Detect: Detect{Running: "mango", File: "~/.config/mango/appearance.conf"},
-			Edits: []Edit{{
-				File: "~/.config/mango/appearance.conf",
-				Rules: []Rule{
-					{Regex: `^rootcolor=\S+`, Value: "rootcolor=0x{root}ff"},
-					{Regex: `^bordercolor=\S+`, Value: "bordercolor=0x{border}ff"},
-					{Regex: `^focuscolor=\S+`, Value: "focuscolor=0x{focus}ff"},
-					{Regex: `^maximizescreencolor=\S+`, Value: "maximizescreencolor=0x{maximizescreen}ff"},
-					{Regex: `^urgentcolor=\S+`, Value: "urgentcolor=0x{urgent}ff"},
-					{Regex: `^scratchpadcolor=\S+`, Value: "scratchpadcolor=0x{scratchpad}ff"},
-					{Regex: `^globalcolor=\S+`, Value: "globalcolor=0x{global}ff"},
-					{Regex: `^overlaycolor=\S+`, Value: "overlaycolor=0x{overlay}ff"},
-				},
-			}},
-			Reload: []Reload{{Command: []string{"mmsg", "-d", "reload_config"}}},
-		},
-		{
-			Name:   "hyprland",
-			Detect: Detect{Running: "Hyprland", File: "~/.config/hypr/appearance.conf"},
-			Edits: []Edit{{
-				File: "~/.config/hypr/appearance.conf",
-				Rules: []Rule{
-					{Regex: `^(\s*)col\.active_border\s*=.*$`, Value: "${1}col.active_border = rgba({focus}ff)"},
-					{Regex: `^(\s*)col\.inactive_border\s*=.*$`, Value: "${1}col.inactive_border = rgba({border}ff)"},
-				},
-			}},
-			Reload: []Reload{{Command: []string{"hyprctl", "reload"}}},
-		},
-		{
-			// inactive-color begins its own line, so the ^-anchored
-			// active-color rule cannot swallow it despite the substring.
-			// inactive runs FIRST: were active's anchor ever relaxed, it
-			// would then corrupt the already-written inactive value and the
-			// test catches it — in the other order the damage is repaired
-			// by the later rule and stays invisible.
-			// The urgent template keeps the a6 alpha the config always had.
-			Name:   "niri",
-			Detect: Detect{Running: "niri", File: "~/.config/niri/incl/04-layout.kdl"},
-			Edits: []Edit{{
-				File: "~/.config/niri/incl/04-layout.kdl",
-				Rules: []Rule{
-					{Regex: `^(\s*)inactive-color\s+"[^"]*"`, Value: `${1}inactive-color "#{border}"`},
-					{Regex: `^(\s*)active-color\s+"[^"]*"`, Value: `${1}active-color "#{focus}"`},
-					{Regex: `^(\s*)urgent-color\s+"[^"]*"`, Value: `${1}urgent-color "#{urgent}a6"`},
-				},
-			}},
-			// niri watches only the top-level config.kdl, and the colours
-			// live in an included file — ask for the reload explicitly.
-			Reload: []Reload{{Command: []string{"niri", "msg", "action", "load-config-file"}}},
-		},
-	}
-}
-
+// Default carries only what is true of any machine: where the state file and
+// clipack live. No themes URL and no targets — those name somebody's generator
+// and somebody's programs, and a built-in would make one person's setup look
+// like part of themer.
 func Default() Config {
 	home, _ := os.UserHomeDir()
-	return Config{
-		PalettesDir:  filepath.Join(home, "lvim-tech", "lvim-gtk", "palettes"),
-		StateFile:    filepath.Join(home, ".theme"),
-		ClipackBase:  filepath.Join(home, "clipack"),
-		PalettesRepo: "lvim-tech/lvim-gtk",
-		Roles:        DefaultRoles(),
-		Targets:      DefaultTargets(),
-	}
+	_ = home
+	return Config{Targets: DefaultTargets()}
 }
 
 // Dir is where themer's own files live.
@@ -274,10 +228,31 @@ func Dir() string {
 	return filepath.Join(home, ".config", "themer")
 }
 
-// ThemesFile is the sync target: the generated snapshot of the palettes,
-// kept apart from the hand-written config.toml so a sync can rewrite it
-// wholesale without ever touching a manual edit.
-func ThemesFile() string { return filepath.Join(Dir(), "themes.toml") }
+// ThemesFile is what `themer --sync` writes: the theme names, one per line.
+//
+// Under the data directory rather than beside config.toml, because it is
+// downloaded rather than written — the same reason configer tracks a program's
+// config and never its generated output.
+func ThemesFile() string {
+	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
+		return filepath.Join(dir, "themer", "themes.txt")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "themer", "themes.txt")
+}
+
+// TargetsDir holds the tool definitions, one file per program: where it keeps
+// its theme, which line names it, what to reload.
+//
+// A directory rather than one file, for the same reason clipack's registry is
+// packages/<category>/<name>.yaml and configer's source is src/<app>/: adding a
+// program is a new file, removing one is a deletion, and a diff names the tool
+// it touched. Forty-five tools in a single document would answer none of that.
+//
+// Kept apart from config.toml because the two answer different questions — a
+// definition says how a program works and is the same on every machine that
+// runs it; config.toml says what this machine does differently.
+func TargetsDir() string { return filepath.Join(Dir(), "targets") }
 
 // Load reads the synced themes.toml, then ~/.config/themer/config.toml over
 // the defaults. Missing files are the normal case, not errors. The order
@@ -286,63 +261,110 @@ func ThemesFile() string { return filepath.Join(Dir(), "themes.toml") }
 func Load() (Config, error) {
 	cfg := Default()
 
-	var synced Config
-	if b, err := os.ReadFile(ThemesFile()); err == nil {
-		if err := toml.Unmarshal(b, &synced); err != nil {
-			return cfg, fmt.Errorf("themes.toml: %w", err)
-		}
-		cfg.Themes = synced.Themes
+	// The tool definitions come before config.toml, so a machine-specific
+	// override still wins by name.
+	defs, err := loadTargetsDir()
+	if err != nil {
+		return cfg, err
 	}
+	cfg.Targets = mergeTargets(cfg.Targets, defs)
 
 	b, err := os.ReadFile(filepath.Join(Dir(), "config.toml"))
 	if err != nil {
-		return cfg, nil
+		return finish(cfg)
 	}
-	// Unmarshal over the defaults: an absent key keeps its default, and a
-	// partial roles: block replaces only the keys it names.
-	fileRoles := map[string]string{}
+	// Unmarshal over the defaults: an absent key keeps its default.
 	var overlay Config
 	if err := toml.Unmarshal(b, &overlay); err != nil {
 		return cfg, err
 	}
-	fileRoles = overlay.Roles
-	overlay.Roles = nil
 	merge(&cfg, overlay)
-	for role, key := range fileRoles {
-		cfg.Roles[role] = key
+	cfg.Targets = mergeTargets(cfg.Targets, overlay.Targets)
+	return finish(cfg)
+}
+
+// loadTargetsDir reads every *.toml in the targets directory, in filename
+// order so two files defining the same name resolve the same way on every
+// machine. An absent directory is the normal case on a fresh install, not an
+// error; a file that will not parse is named, because a definition silently
+// skipped is a program that silently stops being themed.
+func loadTargetsDir() ([]Target, error) {
+	entries, err := os.ReadDir(TargetsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	// Targets merge by name: redefining "mango" replaces the built-in,
-	// a new name extends the list. There is no way to delete a built-in
-	// short of redefining it with a detect rule that never passes — its
-	// Detect already skips it on any machine that does not run it.
-	for _, t := range overlay.Targets {
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".toml") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+
+	var out []Target
+	for _, name := range names {
+		b, err := os.ReadFile(filepath.Join(TargetsDir(), name))
+		if err != nil {
+			return nil, err
+		}
+		var doc Config
+		if err := toml.Unmarshal(b, &doc); err != nil {
+			return nil, fmt.Errorf("targets/%s: %w", name, err)
+		}
+		if len(doc.Targets) == 0 {
+			return nil, fmt.Errorf("targets/%s: declares no [[targets]]", name)
+		}
+		out = mergeTargets(out, doc.Targets)
+	}
+	return out, nil
+}
+
+// mergeTargets folds later definitions over earlier ones by name: redefining
+// "mango" replaces it, a new name extends the list. A target is never deleted
+// this way — its own Detect already skips it on a machine that does not run it.
+func mergeTargets(base, over []Target) []Target {
+	for _, t := range over {
 		replaced := false
-		for i := range cfg.Targets {
-			if cfg.Targets[i].Name == t.Name {
-				cfg.Targets[i] = t
+		for i := range base {
+			if base[i].Name == t.Name {
+				base[i] = t
 				replaced = true
 				break
 			}
 		}
 		if !replaced {
-			cfg.Targets = append(cfg.Targets, t)
+			base = append(base, t)
 		}
 	}
-	cfg.Themes = append(cfg.Themes, overlay.Themes...) // after the synced ones: manual wins the merge
+	return base
+}
+
+// finish desugars and validates every target, wherever it came from, so a
+// broken operation is reported before a single file is touched rather than
+// halfway through a switch.
+func finish(cfg Config) (Config, error) {
+	for i := range cfg.Targets {
+		cfg.Targets[i] = cfg.Targets[i].Desugar()
+		for _, op := range cfg.Targets[i].Ops {
+			if err := op.Validate(cfg.Targets[i].Name); err != nil {
+				return cfg, err
+			}
+		}
+	}
 	return cfg, nil
 }
 
 func merge(dst *Config, src Config) {
-	if src.PalettesDir != "" {
-		dst.PalettesDir = src.PalettesDir
-	}
 	if src.StateFile != "" {
 		dst.StateFile = src.StateFile
 	}
-	if src.ClipackBase != "" {
-		dst.ClipackBase = src.ClipackBase
+	if src.PathDir != "" {
+		dst.PathDir = src.PathDir
 	}
-	if src.PalettesRepo != "" {
-		dst.PalettesRepo = src.PalettesRepo
+	if src.ThemesURL != "" {
+		dst.ThemesURL = src.ThemesURL
 	}
 }

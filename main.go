@@ -6,13 +6,14 @@
 //	themer                  # pick from the list
 //	themer LvimNord_dark    # switch without the TUI
 //	themer --list           # print the theme names
-//	themer --sync           # pull the palettes from GitHub into themes.toml
+//	themer --sync           # fetch the list of theme names
 package main
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -28,28 +29,26 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	ensureClipackOnPath(cfg)
-	themes, err := theme.Discover(cfg.PalettesDir)
-	if err != nil && len(cfg.Themes) == 0 {
-		// A missing palettes directory is only fatal while it is the sole
-		// source: a config full of inline themes stands on its own.
-		fail(err)
+	ensureOnPath(cfg)
+	// --sync is handled before the list is needed: it is what produces the
+	// list, so requiring one first would leave a fresh install unable to get
+	// started.
+	if len(os.Args) > 1 && (os.Args[1] == "--sync" || os.Args[1] == "-s") {
+		n, err := sync.Run(cfg.ThemesURL, config.ThemesFile())
+		if err != nil {
+			fail(err)
+		}
+		fmt.Printf("synced %d theme names from %s into %s\n", n, cfg.ThemesURL, config.ThemesFile())
+		return
 	}
-	var inline []theme.Theme
-	for _, def := range cfg.Themes {
-		inline = append(inline, theme.FromConfig(def.Name, def.Palette))
+
+	themes, err := theme.Discover(config.ThemesFile())
+	if err != nil {
+		fail(fmt.Errorf("%w\n\nthemer ships no themes of its own. Name the list in %s:\n\n    themes_url = \"https://raw.githubusercontent.com/<owner>/<repo>/main/extras/themes.txt\"\n\nthen run `themer --sync`", err, config.Dir()+"/config.toml"))
 	}
-	themes = theme.Merge(themes, inline)
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "--sync", "-s":
-			n, err := sync.Run("https://api.github.com", cfg.PalettesRepo, config.ThemesFile())
-			if err != nil {
-				fail(err)
-			}
-			fmt.Printf("synced %d themes from github.com/%s into %s\n", n, cfg.PalettesRepo, config.ThemesFile())
-			return
 		case "--list", "-l":
 			current := theme.Current(cfg.StateFile)
 			for _, t := range themes {
@@ -79,12 +78,8 @@ func runDirect(cfg config.Config, themes []theme.Theme, name string) {
 	if !ok {
 		fail(fmt.Errorf("no theme %q — see themer --list", name))
 	}
-	p, err := theme.Load(t, cfg.PalettesDir)
-	if err != nil {
-		fail(err)
-	}
 	results := make(chan apply.Result)
-	go apply.Run(apply.All(cfg), t, p, results)
+	go apply.Run(apply.All(cfg), t, results)
 	failed := false
 	for r := range results {
 		switch r.Status {
@@ -102,15 +97,14 @@ func runDirect(cfg config.Config, themes []theme.Theme, name string) {
 	}
 }
 
-// ensureClipackOnPath puts clipack's bin directory on PATH for everything
-// themer runs. Started from a shell it is already there; started from a
-// COMPOSITOR keybind — which is how themer is normally reached, through ql
-// or a hotkey — the environment carries only the login PATH, and tmux and
-// kitty (installed by clipack, with the distribution's copies removed) were
-// simply not found. The appliers then failed on a machine where the same
-// switch worked perfectly from a terminal.
-func ensureClipackOnPath(cfg config.Config) {
-	bin := filepath.Join(cfg.ClipackBase, "bin")
+// ensureOnPath prepends the configured directory to PATH for everything themer
+// runs. See PathDir for why this exists at all.
+func ensureOnPath(cfg config.Config) {
+	bin := cfg.PathDir
+	if bin == "" {
+		return
+	}
+	bin = expandHome(bin)
 	if _, err := os.Stat(bin); err != nil {
 		return
 	}
@@ -126,4 +120,13 @@ func ensureClipackOnPath(cfg config.Config) {
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "themer:", err)
 	os.Exit(1)
+}
+
+// expandHome resolves a leading ~ the way every configured path is resolved.
+func expandHome(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		home, _ := os.UserHomeDir()
+		return home + p[1:]
+	}
+	return p
 }

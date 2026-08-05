@@ -28,7 +28,7 @@ type Applier interface {
 	// when it would not.
 	Detect() (bool, string)
 	// Apply carries the theme over and says what it did.
-	Apply(t theme.Theme, p theme.Palette) (string, error)
+	Apply(t theme.Theme) (string, error)
 }
 
 // Result is one applier's outcome, streamed to the TUI as it lands.
@@ -46,16 +46,11 @@ type Result struct {
 // how far the switch got.
 func All(cfg config.Config) []Applier {
 	appliers := []Applier{
-		NewStateFile(cfg.StateFile),
-		NewClipack(cfg.ClipackBase),
 		NewNeovim(),
-		NewKitty(),
-		NewTmux(cfg.ClipackBase),
-		NewWezterm(),
 		NewGTK(),
 	}
 	for _, t := range cfg.Targets {
-		appliers = append(appliers, NewTarget(t, cfg.Roles))
+		appliers = append(appliers, NewTarget(t))
 	}
 	return appliers
 }
@@ -63,7 +58,7 @@ func All(cfg config.Config) []Applier {
 // Run applies the theme through every applier, reporting each start and each
 // outcome on the channel. It never stops early: one broken target must not
 // leave the desktop half-switched any further than it already is.
-func Run(appliers []Applier, t theme.Theme, p theme.Palette, results chan<- Result) {
+func Run(appliers []Applier, t theme.Theme, results chan<- Result) {
 	for i, a := range appliers {
 		ok, why := a.Detect()
 		if !ok {
@@ -71,7 +66,7 @@ func Run(appliers []Applier, t theme.Theme, p theme.Palette, results chan<- Resu
 			continue
 		}
 		results <- Result{Index: i, Name: a.Name(), Status: StatusRunning}
-		note, err := a.Apply(t, p)
+		note, err := a.Apply(t)
 		if err != nil {
 			results <- Result{Index: i, Name: a.Name(), Status: StatusFailed, Note: err.Error()}
 			continue

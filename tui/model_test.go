@@ -16,20 +16,17 @@ import (
 func testModel(t *testing.T) Model {
 	t.Helper()
 	dir := t.TempDir()
-	palette := "$bg: #2f383e;\n$fg: #b1b7b0;\n$red: #cb4f4f;\n"
-	for _, name := range []string{"everforest_soft.scss", "nord_dark.scss"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(palette), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	list := filepath.Join(dir, "themes.txt")
+	if err := os.WriteFile(list, []byte("LvimEverforest_soft\nLvimNord_dark\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	state := filepath.Join(dir, ".theme")
 	if err := os.WriteFile(state, []byte("LvimEverforest_soft\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.Default()
-	cfg.PalettesDir = dir
 	cfg.StateFile = state
-	themes, err := theme.Discover(dir)
+	themes, err := theme.Discover(list)
 	if err != nil {
 		t.Fatal(err)
 	}

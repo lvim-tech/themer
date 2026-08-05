@@ -49,7 +49,7 @@ func read(t *testing.T, path string) string {
 // lives in ~/.config rather than in the theme directory.
 func TestGTKCopiesTheStylesheetAndItsAssets(t *testing.T) {
 	g, set := newTestGTK(t)
-	if _, err := g.Apply(testTheme, testPalette); err != nil {
+	if _, err := g.Apply(testTheme); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(t, filepath.Join(g.cfg4, "gtk.css")); !strings.Contains(got, "everforest_soft") {
@@ -74,7 +74,7 @@ func TestGTKReplacesTheAssetsRatherThanMerging(t *testing.T) {
 	if err := os.WriteFile(stale, []byte("<svg/>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.Apply(testTheme, testPalette); err != nil {
+	if _, err := g.Apply(testTheme); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(stale); err == nil {
@@ -96,7 +96,7 @@ func TestGTKPreservesTheStylesheetThatWasThereFirst(t *testing.T) {
 	if err := os.WriteFile(css, []byte("/* the original */\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.Apply(testTheme, testPalette); err != nil {
+	if _, err := g.Apply(testTheme); err != nil {
 		t.Fatal(err)
 	}
 	// nwg-look, a settings dialog, another generator: something writes its own
@@ -104,7 +104,7 @@ func TestGTKPreservesTheStylesheetThatWasThereFirst(t *testing.T) {
 	if err := os.WriteFile(css, []byte("/* someone else */\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.Apply(testTheme, testPalette); err != nil {
+	if _, err := g.Apply(testTheme); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(t, css+".before-lvim"); got != "/* the original */\n" {
@@ -123,7 +123,7 @@ func TestGTKMovesAsideAForeignGTK3Stylesheet(t *testing.T) {
 	if err := os.WriteFile(css, []byte("window { background: red; }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.Apply(testTheme, testPalette); err != nil {
+	if _, err := g.Apply(testTheme); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(css); err == nil {
@@ -157,7 +157,7 @@ func TestGTKNamesTheThemeInEverySettingsINIShape(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := g.Apply(testTheme, testPalette); err != nil {
+			if _, err := g.Apply(testTheme); err != nil {
 				t.Fatal(err)
 			}
 			got := read(t, ini)
@@ -183,7 +183,7 @@ func TestGTKNamesTheThemeInEverySettingsINIShape(t *testing.T) {
 func TestGTKRefusesAThemeThatIsNotInstalled(t *testing.T) {
 	g, set := newTestGTK(t)
 	missing := theme.Theme{Name: "LvimKanagawa_dark", Family: "kanagawa", Variant: "dark"}
-	if _, err := g.Apply(missing, testPalette); err == nil {
+	if _, err := g.Apply(missing); err == nil {
 		t.Fatal("a theme that is not installed was accepted")
 	}
 	if *set != "" {
