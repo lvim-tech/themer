@@ -24,14 +24,6 @@ type Config struct {
 	// there is no default here: another setup may keep it elsewhere, or have
 	// none, and themer would then simply not know which theme is active.
 	StateFile string `toml:"state_file"`
-	// PathDir is prepended to PATH for everything themer runs.
-	//
-	// Started from a shell the tools are already there; started from a
-	// COMPOSITOR keybind — which is how themer is normally reached — the
-	// environment carries only the login PATH, and tools installed outside it
-	// were simply not found. The appliers then failed on a machine where the
-	// same switch worked perfectly from a terminal.
-	PathDir string `toml:"path_dir"`
 	// ThemesURL is the plain list of theme names, one per line, that
 	// `themer --sync` fetches. themer holds no colours of its own: every
 	// target now downloads a file generated for it, so all that is left to
@@ -54,7 +46,28 @@ type Config struct {
 // the two would disagree about ordering the first time a target needed a
 // command between two rewrites.
 type Target struct {
-	Name   string   `toml:"name"`
+	Name string `toml:"name"`
+	// Priority orders the switch: lower runs earlier. Unset means
+	// DefaultPriority, so a target only needs a number when it has a reason
+	// to be early or late.
+	//
+	// Two reasons exist, both learned the hard way. The state file has to be
+	// written before anything reads it. The compositors have to repaint last,
+	// because a repaint before a failure looks like a switch that finished.
+	// Filename order used to decide this, which put mango — a compositor —
+	// ahead of state-file, exactly backwards.
+	Priority int `toml:"priority,omitempty"`
+	// Theme pins this target to one theme, whatever the switch was.
+	//
+	// Two neovims, one dark and one light; a terminal that has to stay
+	// readable on a projector; a second instance of anything. A target is a
+	// file, so a second instance is a second file — and this is the field that
+	// lets the second one disagree about which theme it wants.
+	//
+	// A definition can also just write the name into its paths instead of
+	// {theme}, and that has always worked. This says it once instead of in
+	// every operation.
+	Theme  string   `toml:"theme,omitempty"`
 	Detect Detect   `toml:"detect"`
 	Ops    []Op     `toml:"op,omitempty"`
 	Edits  []Edit   `toml:"edit,omitempty"`
@@ -63,15 +76,22 @@ type Target struct {
 
 // Operation kinds. Everything a target can do is one of these; nothing about
 // a particular program belongs in Go.
+// DefaultPriority is where a target lands when it does not ask for a place.
+// Halfway, so a definition can be ordered before or after without negatives.
+const DefaultPriority = 50
+
 const (
-	OpRewrite  = "rewrite"   // regex replacement over the lines of a file
-	OpFetch    = "fetch"     // download source into target, both templated
-	OpLink     = "link"      // symlink target → source, both templated
-	OpWrite    = "write"     // write a file from a templated string
-	OpCommand  = "command"   // run a command, optionally with extra environment
-	OpJSONSet  = "json-set"  // set one key in a JSON document, leaving the rest
-	OpCopyTree = "copy-tree" // copy a directory tree
-	OpSignal   = "signal"    // send a signal to every process of a name
+	OpRewrite   = "rewrite"    // regex replacement over the lines of a file
+	OpFetch     = "fetch"      // download source into target, both templated
+	OpLink      = "link"       // symlink target → source, both templated
+	OpWrite     = "write"      // write a file from a templated string
+	OpCommand   = "command"    // run a command, optionally with extra environment
+	OpJSONSet   = "json-set"   // set one key in a JSON document, leaving the rest
+	OpCopyTree  = "copy-tree"  // copy a directory tree
+	OpCopy      = "copy"       // copy one file, optionally keeping what was there
+	OpSetLine   = "set-line"   // set a key=value line in an ini-shaped file
+	OpMoveAside = "move-aside" // get somebody else's file out of the way
+	OpSignal    = "signal"     // send a signal to every process of a name
 )
 
 // Op is one step of a target. Which fields matter depends on Kind; Validate
@@ -94,6 +114,29 @@ type Op struct {
 	Env     []string `toml:"env,omitempty"`     // command, as KEY=value
 	Signal  string   `toml:"signal,omitempty"`  // signal
 	Process string   `toml:"process,omitempty"` // signal
+
+	// Keep is where copy puts what was at Target before overwriting it —
+	// ONCE. A first switch must not destroy a stylesheet somebody else wrote,
+	// and a later one must not overwrite that rescue with our own file.
+	Keep string `toml:"keep,omitempty"` // copy, move-aside
+	// Unless marks a file as already ours: a target containing it is not
+	// somebody else's and needs no rescuing. Without this the second switch
+	// would "preserve" the theme the first one installed.
+	Unless string `toml:"unless,omitempty"` // copy, move-aside
+	// Section is the ini header set-line works within: the anchor a new line
+	// is inserted after, and the header written when the file has none.
+	Section string `toml:"section,omitempty"` // set-line
+	// Regex is the line set-line replaces when it is already there.
+	Regex string `toml:"regex,omitempty"` // set-line
+
+	// Optional lets an operation fail without failing the target.
+	//
+	// gsettings is the case it exists for: a bare wayland session may carry no
+	// dconf at all, and settings.ini alone already dresses GTK3 there. Failing
+	// the whole switch over it would be the wrong trade — but so would running
+	// it and never saying whether it worked, which is why the note records
+	// what actually happened.
+	Optional bool `toml:"optional,omitempty"`
 }
 
 // Validate reports an operation that cannot run, naming the target — a
@@ -119,8 +162,21 @@ func (o Op) Validate(target string) error {
 			return err
 		}
 		return need(o.Key != "", "key")
-	case OpFetch, OpLink, OpCopyTree:
+	case OpFetch, OpLink, OpCopyTree, OpCopy:
 		if err := need(o.Source != "", "source"); err != nil {
+			return err
+		}
+		return need(o.Target != "", "target")
+	case OpSetLine:
+		if err := need(o.File != "", "file"); err != nil {
+			return err
+		}
+		if err := need(o.Regex != "", "regex"); err != nil {
+			return err
+		}
+		return need(o.Value != "", "value")
+	case OpMoveAside:
+		if err := need(o.File != "", "file"); err != nil {
 			return err
 		}
 		return need(o.Target != "", "target")
@@ -166,6 +222,9 @@ type Detect struct {
 	Running string `toml:"running,omitempty"` // a process with exactly this name exists
 	File    string `toml:"file,omitempty"`    // this file exists (~ expands)
 	Command string `toml:"command,omitempty"` // this command is in PATH
+	// Dir is a directory that must exist. File cannot test one: it reads the
+	// contents, which fails on a directory.
+	Dir string `toml:"dir,omitempty"`
 	// Match is a regex File must contain. It exists because a configuration
 	// can be legitimately out of scope rather than absent — wezterm.lua
 	// running on `colors = custom` with color_scheme commented out is a
@@ -346,6 +405,11 @@ func mergeTargets(base, over []Target) []Target {
 // broken operation is reported before a single file is touched rather than
 // halfway through a switch.
 func finish(cfg Config) (Config, error) {
+	// Stable, so targets sharing a priority keep the order their filenames
+	// gave them — the only thing that decided it before.
+	sort.SliceStable(cfg.Targets, func(i, j int) bool {
+		return priorityOf(cfg.Targets[i]) < priorityOf(cfg.Targets[j])
+	})
 	for i := range cfg.Targets {
 		cfg.Targets[i] = cfg.Targets[i].Desugar()
 		for _, op := range cfg.Targets[i].Ops {
@@ -361,10 +425,14 @@ func merge(dst *Config, src Config) {
 	if src.StateFile != "" {
 		dst.StateFile = src.StateFile
 	}
-	if src.PathDir != "" {
-		dst.PathDir = src.PathDir
-	}
 	if src.ThemesURL != "" {
 		dst.ThemesURL = src.ThemesURL
 	}
+}
+
+func priorityOf(t Target) int {
+	if t.Priority == 0 {
+		return DefaultPriority
+	}
+	return t.Priority
 }

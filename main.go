@@ -12,8 +12,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -29,7 +27,6 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	ensureOnPath(cfg)
 	// --sync is handled before the list is needed: it is what produces the
 	// list, so requiring one first would leave a fresh install unable to get
 	// started.
@@ -97,36 +94,7 @@ func runDirect(cfg config.Config, themes []theme.Theme, name string) {
 	}
 }
 
-// ensureOnPath prepends the configured directory to PATH for everything themer
-// runs. See PathDir for why this exists at all.
-func ensureOnPath(cfg config.Config) {
-	bin := cfg.PathDir
-	if bin == "" {
-		return
-	}
-	bin = expandHome(bin)
-	if _, err := os.Stat(bin); err != nil {
-		return
-	}
-	current := os.Getenv("PATH")
-	for _, dir := range filepath.SplitList(current) {
-		if dir == bin {
-			return
-		}
-	}
-	os.Setenv("PATH", bin+string(os.PathListSeparator)+current)
-}
-
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "themer:", err)
 	os.Exit(1)
-}
-
-// expandHome resolves a leading ~ the way every configured path is resolved.
-func expandHome(p string) string {
-	if strings.HasPrefix(p, "~/") {
-		home, _ := os.UserHomeDir()
-		return home + p[1:]
-	}
-	return p
 }

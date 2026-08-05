@@ -456,3 +456,129 @@ func TestDetectMatchPassesWhenTheLineIsThere(t *testing.T) {
 		t.Errorf("Detect() = false (%s), want the active line to pass", why)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// per-instance themes
+// ---------------------------------------------------------------------------
+
+// A definition that writes a theme name where {theme} would go has always been
+// pinned to it — expandTheme touches only {…}, so a literal passes through.
+// Stated here as a test rather than as a claim, because the whole design of
+// "one file per instance" rests on it.
+func TestALiteralThemeNamePassesThroughUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := opTarget(config.Op{
+		Kind:    config.OpWrite,
+		File:    filepath.Join(dir, "LvimNord_dark.txt"),
+		Content: "LvimNord_dark",
+	}).Apply(testTheme); err != nil {
+		t.Fatal(err)
+	}
+	// testTheme is LvimEverforest_soft; nothing about it may reach the file.
+	if got := read(t, filepath.Join(dir, "LvimNord_dark.txt")); got != "LvimNord_dark" {
+		t.Errorf("content = %q, want the literal name", got)
+	}
+}
+
+// The pin, said once on the target instead of in every operation: two neovims,
+// one dark and one light, are two definitions that disagree about the theme.
+func TestAPinnedTargetIgnoresTheSwitchedTheme(t *testing.T) {
+	dir := t.TempDir()
+	a := NewTarget(config.Target{
+		Name:  "second instance",
+		Theme: "LvimNord_dark",
+		Ops: []config.Op{{
+			Kind: config.OpWrite, File: filepath.Join(dir, "{theme}.txt"), Content: "{theme}",
+		}},
+	})
+
+	if _, err := a.Apply(testTheme); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(dir, "LvimNord_dark.txt")); got != "LvimNord_dark" {
+		t.Errorf("content = %q, want the pinned theme", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "LvimEverforest_soft.txt")); err == nil {
+		t.Error("the switched theme reached a pinned target")
+	}
+}
+
+// The prefetch has to ask for the URL the target will actually want, or it
+// downloads one file and the target then downloads another.
+func TestAPinnedTargetPrefetchesItsOwnTheme(t *testing.T) {
+	a := NewTarget(config.Target{
+		Name:  "pinned",
+		Theme: "LvimNord_dark",
+		Ops:   []config.Op{{Kind: config.OpFetch, Source: "https://example.invalid/{theme}.yml", Target: "/tmp/x"}},
+	})
+
+	urls := a.URLs(testTheme)
+	if len(urls) != 1 || urls[0] != "https://example.invalid/LvimNord_dark.yml" {
+		t.Errorf("URLs = %v, want the pinned theme's", urls)
+	}
+}
+
+// Following the switch WITHOUT following it exactly: the family comes from
+// whatever was switched to, the variant is the definition's own choice.
+func TestFamilyAndVariantExpandSeparately(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := opTarget(config.Op{
+		Kind:    config.OpWrite,
+		File:    filepath.Join(dir, "out.txt"),
+		Content: "{theme} {family} {Family} {variant} {Variant}",
+	}).Apply(testTheme); err != nil {
+		t.Fatal(err)
+	}
+	want := "LvimEverforest_soft everforest Everforest soft Soft"
+	if got := read(t, filepath.Join(dir, "out.txt")); got != want {
+		t.Errorf("expanded to %q, want %q", got, want)
+	}
+}
+
+// The case it exists for: a terminal that has to stay readable while the rest
+// of the desktop goes dark.
+func TestAVariantShiftedTargetFollowsTheFamily(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := opTarget(config.Op{
+		Kind: config.OpWrite, File: filepath.Join(dir, "Lvim{Family}_light.txt"), Content: "x",
+	}).Apply(testTheme); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "LvimEverforest_light.txt")); err != nil {
+		t.Errorf("wanted the light variant of the switched family: %v", err)
+	}
+}
+
+// An unknown placeholder is still an error: a rule that wrote "{focus}" into a
+// config file would look like it had worked.
+func TestAnUnknownPlaceholderIsStillRefused(t *testing.T) {
+	dir := t.TempDir()
+	_, err := opTarget(config.Op{
+		Kind: config.OpWrite, File: filepath.Join(dir, "x"), Content: "{focus}",
+	}).Apply(testTheme)
+	if err == nil || !strings.Contains(err.Error(), "focus") {
+		t.Errorf("error = %v, want the unknown placeholder named", err)
+	}
+}
+
+// A target may name a binary by full path — tmux does, because it is installed
+// outside the PATH a compositor keybind carries. Handed to exec with a literal
+// tilde, that path finds nothing.
+func TestTildeExpandsInCommandArguments(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "touch.sh")
+	marker := filepath.Join(dir, "ran")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", dir)
+
+	if _, err := opTarget(config.Op{
+		Kind: config.OpCommand, Command: []string{"~/touch.sh", "~/ran"},
+	}).Apply(testTheme); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("the command did not run with expanded paths: %v", err)
+	}
+}

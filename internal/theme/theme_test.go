@@ -16,7 +16,7 @@ func writeList(t *testing.T, body string) string {
 }
 
 // The list carries canonical names; family and variant are derived from them,
-// because GTKName and NvimName are built out of those two parts.
+// because GTKName is built out of those two parts.
 func TestDiscoverSplitsTheCanonicalNames(t *testing.T) {
 	path := writeList(t, "LvimEverforest_soft\nLvimNord_dark\nLvimLvim_darker\n")
 
@@ -80,20 +80,16 @@ func TestDiscoverReportsAMissingList(t *testing.T) {
 	}
 }
 
-func TestGTKAndNvimNamesAreDerived(t *testing.T) {
-	tests := []struct{ name, gtk, nvim string }{
-		{"LvimEverforest_soft", "Lvim-EverforestSoft", "lvim-everforest-soft"},
-		// The house palette is lvim_dark and its colorscheme is lvim-dark:
-		// the family is dropped when it IS lvim.
-		{"LvimLvim_dark", "Lvim-LvimDark", "lvim-dark"},
+func TestGTKNameIsDerived(t *testing.T) {
+	tests := []struct{ name, gtk string }{
+		{"LvimEverforest_soft", "Lvim-EverforestSoft"},
+		// The base family is called base, not lvim, so this is no longer the
+		// odd one out: Lvim-BaseDark, by the same rule as every other.
+		{"LvimBase_dark", "Lvim-BaseDark"},
 	}
 	for _, tt := range tests {
-		got := FromName(tt.name)
-		if got.GTKName() != tt.gtk {
-			t.Errorf("%s: GTKName = %q, want %q", tt.name, got.GTKName(), tt.gtk)
-		}
-		if got.NvimName() != tt.nvim {
-			t.Errorf("%s: NvimName = %q, want %q", tt.name, got.NvimName(), tt.nvim)
+		if got := FromName(tt.name).GTKName(); got != tt.gtk {
+			t.Errorf("%s: GTKName = %q, want %q", tt.name, got, tt.gtk)
 		}
 	}
 }

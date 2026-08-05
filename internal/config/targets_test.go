@@ -125,3 +125,66 @@ func TestAnAbsentDirectoryIsNotAnError(t *testing.T) {
 		t.Errorf("targets = %d, want none", len(got))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// priority
+// ---------------------------------------------------------------------------
+
+// Filename order is arbitrary with respect to a decision: it put mango — a
+// compositor, which must repaint last — ahead of state-file, which must be
+// written first. Priority is what states the decision.
+func TestPriorityOverridesFilenameOrder(t *testing.T) {
+	dir := withConfigDir(t)
+	writeTarget(t, dir, "mango.toml", "[[targets]]\nname = 'mango'\npriority = 90\n[targets.detect]\nalways = true\n")
+	writeTarget(t, dir, "state-file.toml", "[[targets]]\nname = 'state'\npriority = 10\n[targets.detect]\nalways = true\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Targets) != 2 {
+		t.Fatalf("targets = %d", len(cfg.Targets))
+	}
+	// mango.toml sorts first by filename; priority has to beat that.
+	if cfg.Targets[0].Name != "state" {
+		t.Errorf("order = %q, %q — want the low priority first", cfg.Targets[0].Name, cfg.Targets[1].Name)
+	}
+}
+
+// Equal priorities keep the order their filenames gave them, so a set of
+// targets that never asks for a place stays predictable between runs.
+func TestEqualPrioritiesKeepFilenameOrder(t *testing.T) {
+	dir := withConfigDir(t)
+	for _, n := range []string{"a", "b", "c"} {
+		writeTarget(t, dir, n+".toml", "[[targets]]\nname = '"+n+"'\n[targets.detect]\nalways = true\n")
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"a", "b", "c"} {
+		if cfg.Targets[i].Name != want {
+			t.Errorf("targets[%d] = %q, want %q", i, cfg.Targets[i].Name, want)
+		}
+	}
+}
+
+// An unset priority is the middle, so a definition can be ordered before or
+// after the crowd without anyone having to write a negative number.
+func TestUnsetPriorityLandsInTheMiddle(t *testing.T) {
+	dir := withConfigDir(t)
+	writeTarget(t, dir, "late.toml", "[[targets]]\nname = 'late'\npriority = 90\n[targets.detect]\nalways = true\n")
+	writeTarget(t, dir, "plain.toml", "[[targets]]\nname = 'plain'\n[targets.detect]\nalways = true\n")
+	writeTarget(t, dir, "early.toml", "[[targets]]\nname = 'early'\npriority = 10\n[targets.detect]\nalways = true\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"early", "plain", "late"} {
+		if cfg.Targets[i].Name != want {
+			t.Errorf("targets[%d] = %q, want %q", i, cfg.Targets[i].Name, want)
+		}
+	}
+}

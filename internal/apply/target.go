@@ -1,6 +1,7 @@
 package apply
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,6 +25,10 @@ import (
 // touching Go — that is the point of the declarative form.
 type TargetApplier struct {
 	t config.Target
+	// fetched holds what Run downloaded ahead of time, keyed by URL. Empty is
+	// fine: a fetch operation falls back to downloading for itself, so nothing
+	// depends on the prefetch having happened.
+	fetched map[string][]byte
 }
 
 // NewTarget desugars here rather than trusting the caller to have done it.
@@ -35,6 +40,29 @@ func NewTarget(t config.Target) *TargetApplier {
 }
 
 func (a *TargetApplier) Name() string { return a.t.Name }
+
+// URLs is every address this target will download for the given theme, so Run
+// can fetch them all at once before anything is applied.
+//
+// Detect is deliberately NOT consulted: it can be slow (pgrep, a file read),
+// and a URL fetched for a target that turns out to be skipped costs a few
+// kilobytes, while asking first would serialise the very thing being made
+// concurrent.
+func (a *TargetApplier) URLs(t theme.Theme) []string {
+	t = a.themeFor(t)
+	var out []string
+	for _, op := range a.t.Ops {
+		if op.Kind != config.OpFetch {
+			continue
+		}
+		src, err := expandTheme(op.Source, t)
+		if err != nil || !strings.HasPrefix(src, "http") {
+			continue
+		}
+		out = append(out, src)
+	}
+	return out
+}
 
 func (a *TargetApplier) Detect() (bool, string) {
 	d := a.t.Detect
@@ -66,7 +94,12 @@ func (a *TargetApplier) Detect() (bool, string) {
 			return false, d.Command + " not in PATH"
 		}
 	}
-	if !d.Always && d.Running == "" && d.File == "" && d.Command == "" {
+	if d.Dir != "" {
+		if fi, err := os.Stat(expandHome(d.Dir)); err != nil || !fi.IsDir() {
+			return false, "no " + d.Dir
+		}
+	}
+	if !d.Always && d.Running == "" && d.File == "" && d.Command == "" && d.Dir == "" {
 		return false, "target declares no detect rule"
 	}
 	return true, ""
@@ -79,17 +112,33 @@ func (a *TargetApplier) Detect() (bool, string) {
 // that is neither the old one nor the new one. An operation list that carried
 // on would turn every multi-step target into that.
 func (a *TargetApplier) Apply(t theme.Theme) (string, error) {
+	t = a.themeFor(t)
 	var did []string
 	for _, op := range a.t.Ops {
 		note, err := a.runOp(op, t)
 		if err != nil {
-			return "", err
+			if !op.Optional {
+				return "", err
+			}
+			// Recorded rather than swallowed: an optional step that did not
+			// run is still something the reader wants to know.
+			did = append(did, op.Kind+" skipped ("+firstLine(err.Error())+")")
+			continue
 		}
 		if note != "" {
 			did = append(did, note)
 		}
 	}
 	return strings.Join(did, ", "), nil
+}
+
+// themeFor is the theme this target actually uses: the one being switched to,
+// unless the definition pinned a different one.
+func (a *TargetApplier) themeFor(t theme.Theme) theme.Theme {
+	if a.t.Theme == "" {
+		return t
+	}
+	return theme.FromName(a.t.Theme)
 }
 
 func (a *TargetApplier) runOp(op config.Op, t theme.Theme) (string, error) {
@@ -133,7 +182,7 @@ func (a *TargetApplier) runOp(op config.Op, t theme.Theme) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return fetch(src, expandHome(dst))
+		return a.fetch(src, expandHome(dst))
 
 	case config.OpLink:
 		src, err := expand(op.Source)
@@ -175,7 +224,11 @@ func (a *TargetApplier) runOp(op config.Op, t theme.Theme) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			argv[i] = v
+			// ~ expands in arguments too, and in argv[0] above all: a target
+			// naming a binary by full path — the way tmux does, because it is
+			// installed outside the PATH a compositor keybind carries — would
+			// otherwise hand exec a literal tilde and fail to find it.
+			argv[i] = expandHome(v)
 		}
 		env := make([]string, len(op.Env))
 		for i, e := range op.Env {
@@ -186,6 +239,43 @@ func (a *TargetApplier) runOp(op config.Op, t theme.Theme) (string, error) {
 			env[i] = v
 		}
 		return runCommand(argv, env)
+
+	case config.OpCopy:
+		src, err := expand(op.Source)
+		if err != nil {
+			return "", err
+		}
+		dst, err := expand(op.Target)
+		if err != nil {
+			return "", err
+		}
+		keep, err := expand(op.Keep)
+		if err != nil {
+			return "", err
+		}
+		return copyFile(expandHome(src), expandHome(dst), expandHome(keep), op.Unless)
+
+	case config.OpSetLine:
+		path, err := expand(op.File)
+		if err != nil {
+			return "", err
+		}
+		value, err := expand(op.Value)
+		if err != nil {
+			return "", err
+		}
+		return setLine(expandHome(path), op.Regex, value, op.Section)
+
+	case config.OpMoveAside:
+		path, err := expand(op.File)
+		if err != nil {
+			return "", err
+		}
+		dst, err := expand(op.Target)
+		if err != nil {
+			return "", err
+		}
+		return moveAside(expandHome(path), expandHome(dst), op.Unless)
 
 	case config.OpSignal:
 		return sendSignal(op.Signal, op.Process)
@@ -227,9 +317,27 @@ func (a *TargetApplier) applyRewrite(e config.Op, t theme.Theme) (int, error) {
 	return total, os.WriteFile(path, []byte(content), 0o644)
 }
 
-// fetchClient is shared so a target with several fetch operations reuses the
-// connection instead of opening one per file.
+// fetchClient is shared so the whole prefetch reuses connections instead of
+// opening one per file.
 var fetchClient = &http.Client{Timeout: 30 * time.Second}
+
+// download reads one URL into memory, naming it in every error: a failure here
+// is reported by whichever target wanted the file.
+func download(source string) ([]byte, error) {
+	resp, err := fetchClient.Get(source)
+	if err != nil {
+		return nil, fmt.Errorf("fetching %s: %w", source, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching %s: %s", source, resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", source, err)
+	}
+	return body, nil
+}
 
 // fetch downloads source into target.
 //
@@ -242,18 +350,13 @@ var fetchClient = &http.Client{Timeout: 30 * time.Second}
 //
 // Written through a temporary file: a half-downloaded theme is worse than the
 // previous one, and a switch that fails should leave the old theme intact.
-func fetch(source, target string) (string, error) {
-	resp, err := fetchClient.Get(source)
-	if err != nil {
-		return "", fmt.Errorf("fetching %s: %w", source, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetching %s: %s", source, resp.Status)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("reading %s: %w", source, err)
+func (a *TargetApplier) fetch(source, target string) (string, error) {
+	body, ok := a.fetched[source]
+	if !ok {
+		var err error
+		if body, err = download(source); err != nil {
+			return "", err
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -267,6 +370,106 @@ func fetch(source, target string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("fetched %s (%d B)", shortPath(target), len(body)), nil
+}
+
+// copyFile copies src over dst, rescuing what was there ONCE.
+//
+// keep is where the previous contents go, and unless marks a file as already
+// ours. Both matter, and the pair is the whole point: without keep, a first
+// switch destroys a stylesheet somebody else wrote; without unless, the second
+// switch "rescues" the theme the first one installed, and the real rescue is
+// lost. Written once, never overwritten.
+func copyFile(src, dst, keep, unless string) (string, error) {
+	body, err := os.ReadFile(src)
+	if err != nil {
+		return "", fmt.Errorf("nothing to copy at %s: %w", shortPath(src), err)
+	}
+
+	rescued := ""
+	if keep != "" {
+		if old, err := os.ReadFile(dst); err == nil && (unless == "" || !bytes.Contains(old, []byte(unless))) {
+			if _, err := os.Stat(keep); os.IsNotExist(err) {
+				if err := os.MkdirAll(filepath.Dir(keep), 0o755); err != nil {
+					return "", err
+				}
+				if err := os.WriteFile(keep, old, 0o644); err != nil {
+					return "", err
+				}
+				rescued = " (kept " + shortPath(keep) + ")"
+			}
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(dst, body, 0o644); err != nil {
+		return "", err
+	}
+	return shortPath(dst) + rescued, nil
+}
+
+// setLine sets one key=value line in an ini-shaped file, whatever state the
+// file is in: replace it where it already is, insert it under the section when
+// the section exists, and write the section itself when it does not.
+//
+// The last case is why this is an operation rather than a rewrite. A plain
+// regex replacement over a settings.ini with no [Settings] header matches
+// nothing — which read as success and changed nothing, in the shell version
+// this replaces.
+func setLine(path, regex, value, section string) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	re, err := regexp.Compile("(?m)" + regex)
+	if err != nil {
+		return "", fmt.Errorf("rule %q: %w", regex, err)
+	}
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		body := value + "\n"
+		if section != "" {
+			body = section + "\n" + body
+		}
+		return "created " + shortPath(path), os.WriteFile(path, []byte(body), 0o644)
+	}
+
+	content := string(b)
+	switch {
+	case re.MatchString(content):
+		content = re.ReplaceAllString(content, value)
+	case section != "" && strings.Contains(content, section):
+		content = strings.Replace(content, section, section+"\n"+value, 1)
+	case section != "":
+		content = section + "\n" + value + "\n" + content
+	default:
+		content = value + "\n" + content
+	}
+	return shortPath(path), os.WriteFile(path, []byte(content), 0o644)
+}
+
+// moveAside gets somebody else's file out of the way, keeping it.
+//
+// A user stylesheet loads at PRIORITY_USER (800) and outranks a theme's 200, so
+// anything left there quietly overrides ours — the switch appears to work and
+// the colours do not change. Moved, never deleted, and only when it is not
+// already ours.
+func moveAside(path, target, unless string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil // nothing in the way
+	}
+	if unless != "" && bytes.Contains(b, []byte(unless)) {
+		return "", nil // already ours
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.Rename(path, target); err != nil {
+		return "", err
+	}
+	return "moved aside " + shortPath(path), nil
 }
 
 // link points dst at src, replacing only what this tool may replace.
@@ -377,27 +580,53 @@ func sendSignal(name, process string) (string, error) {
 
 // expandTheme resolves the placeholders a target may use.
 //
-// There is one: {theme}, the canonical name. Colour placeholders are gone with
-// the palette — every target now downloads a file the generator produced, so
-// nothing here composes a colour value any more. An unknown placeholder is an
-// error rather than a literal, because a rule that wrote "{focus}" into a
-// config file would look like it had worked.
+// {theme} is the canonical name; {family} and {variant} are its two halves, in
+// lower case, and {Family} / {Variant} capitalised the way the canonical name
+// spells them. The halves exist so a definition can follow the switch WITHOUT
+// following it exactly:
+//
+//	source = '…/extras/eza/Lvim{Family}_light.yml'
+//
+// takes whichever family was switched to and pins the light variant of it — a
+// terminal that has to stay readable while everything else goes dark.
+//
+// Colour placeholders are gone with the palette: every target downloads a file
+// the generator produced, so nothing here composes a colour any more.
+//
+// An unknown placeholder is an error rather than a literal, because a rule
+// that wrote "{focus}" into a config file would look like it had worked.
 var placeholder = regexp.MustCompile(`\{([a-zA-Z][a-zA-Z0-9_-]*)\}`)
 
 func expandTheme(tpl string, t theme.Theme) (string, error) {
 	var missing string
 	out := placeholder.ReplaceAllStringFunc(tpl, func(m string) string {
-		if key := m[1 : len(m)-1]; key == "theme" {
+		switch key := m[1 : len(m)-1]; key {
+		case "theme":
 			return t.Name
-		} else {
+		case "family":
+			return t.Family
+		case "Family":
+			return capitalise(t.Family)
+		case "variant":
+			return t.Variant
+		case "Variant":
+			return capitalise(t.Variant)
+		default:
 			missing = key
 		}
 		return m
 	})
 	if missing != "" {
-		return "", fmt.Errorf("unknown placeholder {%s}: only {theme} is expanded", missing)
+		return "", fmt.Errorf("unknown placeholder {%s}: {theme}, {family}, {Family}, {variant} and {Variant} are expanded", missing)
 	}
 	return out, nil
+}
+
+func capitalise(s string) string {
+	if s == "" {
+		return ""
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 var signals = map[string]syscall.Signal{
