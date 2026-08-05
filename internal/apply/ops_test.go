@@ -685,3 +685,65 @@ func TestAssembleFailsOnAMissingPartAndKeepsThePrevious(t *testing.T) {
 		t.Errorf("the previous output was destroyed: %q", got)
 	}
 }
+
+// zed names its theme at theme.dark, inside an object that also carries mode
+// and the light choice. Setting the object wholesale would take both with it.
+func TestJSONSetReachesANestedKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	os.WriteFile(path, []byte(`{"ui_font_size":16,"theme":{"mode":"system","light":"One Light","dark":"Sandcastle"}}`), 0o644)
+
+	if _, err := opTarget(config.Op{
+		Kind: config.OpJSONSet, File: path, Key: "theme.dark", Value: "{theme}",
+	}).Apply(testTheme); err != nil {
+		t.Fatal(err)
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(read(t, path)), &doc); err != nil {
+		t.Fatal(err)
+	}
+	theme, _ := doc["theme"].(map[string]any)
+	if theme["dark"] != "LvimEverforest_soft" {
+		t.Errorf("theme.dark = %v", theme["dark"])
+	}
+	if theme["mode"] != "system" || theme["light"] != "One Light" {
+		t.Errorf("the siblings were lost: %v", theme)
+	}
+	if doc["ui_font_size"] == nil {
+		t.Error("an unrelated top-level setting was lost")
+	}
+}
+
+// A path may be created where the document has none yet.
+func TestJSONSetCreatesMissingObjectsAlongThePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	os.WriteFile(path, []byte(`{"ui_font_size":16}`), 0o644)
+
+	if _, err := opTarget(config.Op{
+		Kind: config.OpJSONSet, File: path, Key: "theme.dark", Value: "x",
+	}).Apply(testTheme); err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	json.Unmarshal([]byte(read(t, path)), &doc)
+	if doc["theme"].(map[string]any)["dark"] != "x" {
+		t.Errorf("doc = %v", doc)
+	}
+}
+
+// A scalar where the path expects an object means the document is not shaped
+// the way the definition believes. Overwriting it would destroy a setting.
+func TestJSONSetRefusesToWalkThroughAScalar(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	os.WriteFile(path, []byte(`{"theme":"One Light"}`), 0o644)
+
+	_, err := opTarget(config.Op{
+		Kind: config.OpJSONSet, File: path, Key: "theme.dark", Value: "x",
+	}).Apply(testTheme)
+	if err == nil {
+		t.Fatal("a scalar in the path was walked through")
+	}
+	if got := read(t, path); got != `{"theme":"One Light"}` {
+		t.Errorf("the document was rewritten: %q", got)
+	}
+}

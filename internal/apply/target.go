@@ -592,6 +592,17 @@ func copyTree(src, dst string) (string, error) {
 // belong to the program, not to the theme, and rewriting it wholesale would
 // quietly reset them. A document that will not parse is reported, never
 // replaced.
+//
+// The key may be a dotted path — zed names its theme at theme.dark, inside an
+// object that also carries mode and the light choice, and replacing the object
+// wholesale would take both with it. Intermediate objects are created when
+// missing; anything already there that is NOT an object stops the write rather
+// than being overwritten, because a scalar where a path expects an object means
+// the document is not shaped the way the definition believes.
+//
+// A key that genuinely contains a dot cannot be addressed this way. No program
+// here has one, and the alternative — an escape — would be a syntax to learn
+// for a case that does not exist.
 func jsonSet(path, key, value string) (string, error) {
 	doc := map[string]any{}
 	switch b, err := os.ReadFile(path); {
@@ -602,7 +613,23 @@ func jsonSet(path, key, value string) (string, error) {
 	case !os.IsNotExist(err):
 		return "", err
 	}
-	doc[key] = value
+	parts := strings.Split(key, ".")
+	target := doc
+	for _, p := range parts[:len(parts)-1] {
+		next, ok := target[p]
+		if !ok {
+			m := map[string]any{}
+			target[p] = m
+			target = m
+			continue
+		}
+		m, ok := next.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("%s: %q is not an object, cannot set %q", shortPath(path), p, key)
+		}
+		target = m
+	}
+	target[parts[len(parts)-1]] = value
 
 	encoded, err := json.Marshal(doc)
 	if err != nil {
