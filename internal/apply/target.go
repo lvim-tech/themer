@@ -603,12 +603,13 @@ func copyTree(src, dst string) (string, error) {
 	return "copied " + shortPath(dst), nil
 }
 
-// jsonSet sets one key and leaves every other key as it was.
+// jsonSet sets one key and leaves every other byte of the document as it was.
 //
-// Read-modify-write rather than a template: the document holds settings that
-// belong to the program, not to the theme, and rewriting it wholesale would
-// quietly reset them. A document that will not parse is reported, never
-// replaced.
+// The document belongs to the program, not to the theme: it holds settings we
+// did not come for, in an order and a formatting somebody chose, often with
+// comments explaining them. So the key is edited as TEXT — see jsonedit.go —
+// and nothing else in the file is even rewritten. A document that will not
+// parse is reported, never replaced.
 //
 // The key may be a dotted path — zed names its theme at theme.dark, inside an
 // object that also carries mode and the light choice, and replacing the object
@@ -621,43 +622,50 @@ func copyTree(src, dst string) (string, error) {
 // here has one, and the alternative — an escape — would be a syntax to learn
 // for a case that does not exist.
 func jsonSet(path, key, value string) (string, error) {
-	doc := map[string]any{}
-	switch b, err := os.ReadFile(path); {
-	case err == nil:
-		if err := json.Unmarshal(b, &doc); err != nil {
-			return "", fmt.Errorf("%s: %w", shortPath(path), err)
-		}
-	case !os.IsNotExist(err):
-		return "", err
-	}
 	parts := strings.Split(key, ".")
-	target := doc
-	for _, p := range parts[:len(parts)-1] {
-		next, ok := target[p]
-		if !ok {
-			m := map[string]any{}
-			target[p] = m
-			target = m
-			continue
-		}
-		m, ok := next.(map[string]any)
-		if !ok {
-			return "", fmt.Errorf("%s: %q is not an object, cannot set %q", shortPath(path), p, key)
-		}
-		target = m
-	}
-	target[parts[len(parts)-1]] = value
-
-	encoded, err := json.Marshal(doc)
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
 	}
+
+	src, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+
+	var out []byte
+	if len(bytes.TrimSpace(src)) == 0 {
+		// No document to preserve: write the one the key implies, indented,
+		// because a program's settings file is read by people too.
+		if out, err = json.MarshalIndent(nested(parts, value), "", "  "); err != nil {
+			return "", err
+		}
+		out = append(out, '\n')
+	} else if out, err = setJSONKey(src, parts, encoded); err != nil {
+		return "", fmt.Errorf("%s: %w", shortPath(path), err)
+	}
+
 	// Written through a temporary file: a truncated document costs every
-	// setting in it, not just the one being set.
-	if err := safefile.Write(path, append(encoded, '\n'), safefile.ModeOf(path, 0o644)); err != nil {
+	// setting in it, not just the one being set. With the mode it already had,
+	// so a settings file somebody made private stays private.
+	if err := safefile.Write(path, out, safefile.ModeOf(path, 0o644)); err != nil {
 		return "", err
 	}
 	return key + " → " + value, nil
+}
+
+// nested is the document a dotted key implies when there is none yet:
+// theme.dark becomes {"theme": {"dark": value}}.
+func nested(parts []string, value string) map[string]any {
+	doc := map[string]any{}
+	at := doc
+	for _, p := range parts[:len(parts)-1] {
+		m := map[string]any{}
+		at[p] = m
+		at = m
+	}
+	at[parts[len(parts)-1]] = value
+	return doc
 }
 
 func runCommand(argv, env []string) (string, error) {
