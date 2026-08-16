@@ -296,8 +296,6 @@ func DefaultTargets() []Target { return nil }
 // and somebody's programs, and a built-in would make one person's setup look
 // like part of themer.
 func Default() Config {
-	home, _ := os.UserHomeDir()
-	_ = home
 	return Config{Targets: DefaultTargets()}
 }
 
