@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lvim-tech/themer/internal/config"
+	"github.com/lvim-tech/themer/internal/safefile"
 	"github.com/lvim-tech/themer/internal/theme"
 )
 
@@ -56,7 +57,10 @@ func (a *TargetApplier) URLs(t theme.Theme) []string {
 			continue
 		}
 		src, err := expandTheme(op.Source, t)
-		if err != nil || !strings.HasPrefix(src, "http") {
+		// Both schemes, spelled out: HasPrefix("http") also said yes to a local
+		// path that happened to start with those four letters, and prefetching
+		// it meant a request for a file that was never a URL.
+		if err != nil || !(strings.HasPrefix(src, "https://") || strings.HasPrefix(src, "http://")) {
 			continue
 		}
 		out = append(out, src)
@@ -146,6 +150,15 @@ func (a *TargetApplier) runOp(op config.Op, t theme.Theme) (string, error) {
 	// theme, so {theme} has to expand in `file` and `target`, not only in the
 	// values written into them.
 	expand := func(s string) (string, error) { return expandTheme(s, t) }
+	// expandPath is expand plus the two things a path needs: ~ resolved, and a
+	// refusal to climb out of where the definition pointed it.
+	expandPath := func(s string) (string, error) {
+		v, err := expand(s)
+		if err != nil {
+			return "", err
+		}
+		return safePath(v)
+	}
 
 	switch op.Kind {
 	case config.OpRewrite:
@@ -156,7 +169,7 @@ func (a *TargetApplier) runOp(op config.Op, t theme.Theme) (string, error) {
 		return fmt.Sprintf("%s (%d)", shortPath(op.File), n), nil
 
 	case config.OpWrite:
-		path, err := expand(op.File)
+		path, err := expandPath(op.File)
 		if err != nil {
 			return "", err
 		}
@@ -164,7 +177,6 @@ func (a *TargetApplier) runOp(op config.Op, t theme.Theme) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		path = expandHome(path)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return "", err
 		}
@@ -178,36 +190,36 @@ func (a *TargetApplier) runOp(op config.Op, t theme.Theme) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		dst, err := expand(op.Target)
+		dst, err := expandPath(op.Target)
 		if err != nil {
 			return "", err
 		}
-		return a.fetch(src, expandHome(dst))
+		return a.fetch(src, dst)
 
 	case config.OpLink:
-		src, err := expand(op.Source)
+		src, err := expandPath(op.Source)
 		if err != nil {
 			return "", err
 		}
-		dst, err := expand(op.Target)
+		dst, err := expandPath(op.Target)
 		if err != nil {
 			return "", err
 		}
-		return a.link(expandHome(src), expandHome(dst))
+		return a.link(src, dst)
 
 	case config.OpCopyTree:
-		src, err := expand(op.Source)
+		src, err := expandPath(op.Source)
 		if err != nil {
 			return "", err
 		}
-		dst, err := expand(op.Target)
+		dst, err := expandPath(op.Target)
 		if err != nil {
 			return "", err
 		}
-		return copyTree(expandHome(src), expandHome(dst))
+		return copyTree(src, dst)
 
 	case config.OpJSONSet:
-		path, err := expand(op.File)
+		path, err := expandPath(op.File)
 		if err != nil {
 			return "", err
 		}
@@ -215,7 +227,7 @@ func (a *TargetApplier) runOp(op config.Op, t theme.Theme) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return jsonSet(expandHome(path), op.Key, value)
+		return jsonSet(path, op.Key, value)
 
 	case config.OpCommand:
 		argv := make([]string, len(op.Command))
@@ -241,22 +253,22 @@ func (a *TargetApplier) runOp(op config.Op, t theme.Theme) (string, error) {
 		return runCommand(argv, env)
 
 	case config.OpCopy:
-		src, err := expand(op.Source)
+		src, err := expandPath(op.Source)
 		if err != nil {
 			return "", err
 		}
-		dst, err := expand(op.Target)
+		dst, err := expandPath(op.Target)
 		if err != nil {
 			return "", err
 		}
-		keep, err := expand(op.Keep)
+		keep, err := expandPath(op.Keep)
 		if err != nil {
 			return "", err
 		}
-		return copyFile(expandHome(src), expandHome(dst), expandHome(keep), op.Unless)
+		return copyFile(src, dst, keep, op.Unless)
 
 	case config.OpSetLine:
-		path, err := expand(op.File)
+		path, err := expandPath(op.File)
 		if err != nil {
 			return "", err
 		}
@@ -264,29 +276,29 @@ func (a *TargetApplier) runOp(op config.Op, t theme.Theme) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return setLine(expandHome(path), op.Regex, value, op.Section)
+		return setLine(path, op.Regex, value, op.Section)
 
 	case config.OpMoveAside:
-		path, err := expand(op.File)
+		path, err := expandPath(op.File)
 		if err != nil {
 			return "", err
 		}
-		dst, err := expand(op.Target)
+		dst, err := expandPath(op.Target)
 		if err != nil {
 			return "", err
 		}
-		return moveAside(expandHome(path), expandHome(dst), op.Unless)
+		return moveAside(path, dst, op.Unless)
 
 	case config.OpAssemble:
 		sources := make([]string, len(op.Sources))
 		for i, src := range op.Sources {
-			v, err := expand(src)
+			v, err := expandPath(src)
 			if err != nil {
 				return "", err
 			}
-			sources[i] = expandHome(v)
+			sources[i] = v
 		}
-		dst, err := expand(op.Target)
+		dst, err := expandPath(op.Target)
 		if err != nil {
 			return "", err
 		}
@@ -307,7 +319,10 @@ func (a *TargetApplier) applyRewrite(e config.Op, t theme.Theme) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	path := expandHome(file)
+	path, err := safePath(file)
+	if err != nil {
+		return 0, err
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return 0, err
@@ -340,8 +355,19 @@ func (a *TargetApplier) applyRewrite(e config.Op, t theme.Theme) (int, error) {
 // opening one per file.
 var fetchClient = &http.Client{Timeout: 30 * time.Second}
 
+// maxTheme is as much of one theme file as is read.
+//
+// The largest of them is a few tens of kilobytes. The client's timeout bounds
+// how LONG a body may take, not how BIG it may be, and prefetch runs these
+// concurrently — so without a ceiling one server answering slowly and endlessly
+// is buffered whole, once per URL, until the machine runs out of memory.
+const maxTheme = 8 << 20
+
 // download reads one URL into memory, naming it in every error: a failure here
 // is reported by whichever target wanted the file.
+//
+// source should be https: a theme file is written straight into a program's
+// configuration, so on plain http whoever is on the path writes it.
 func download(source string) ([]byte, error) {
 	resp, err := fetchClient.Get(source)
 	if err != nil {
@@ -351,9 +377,14 @@ func download(source string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetching %s: %s", source, resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	// One byte past the ceiling, so going over is detected rather than a
+	// truncated theme being written out as if it were the whole file.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTheme+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", source, err)
+	}
+	if len(body) > maxTheme {
+		return nil, fmt.Errorf("reading %s: the answer is larger than %d bytes, which is not a theme file", source, maxTheme)
 	}
 	return body, nil
 }
@@ -378,14 +409,7 @@ func (a *TargetApplier) fetch(source, target string) (string, error) {
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return "", err
-	}
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o644); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmp, target); err != nil {
+	if err := safefile.Write(target, body, safefile.ModeOf(target, 0o644)); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("fetched %s (%d B)", shortPath(target), len(body)), nil
@@ -528,14 +552,7 @@ func assemble(sources []string, target, marker string) (string, error) {
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return "", err
-	}
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, out.Bytes(), 0o644); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmp, target); err != nil {
+	if err := safefile.Write(target, out.Bytes(), safefile.ModeOf(target, 0o644)); err != nil {
 		return "", err
 	}
 	return "assembled " + shortPath(target) + fmt.Sprintf(" (%d parts)", len(sources)), nil
@@ -635,16 +652,9 @@ func jsonSet(path, key, value string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
-	}
 	// Written through a temporary file: a truncated document costs every
 	// setting in it, not just the one being set.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(encoded, '\n'), 0o644); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := safefile.Write(path, append(encoded, '\n'), safefile.ModeOf(path, 0o644)); err != nil {
 		return "", err
 	}
 	return key + " → " + value, nil
@@ -760,6 +770,24 @@ func expandHome(p string) string {
 		return home + p[1:]
 	}
 	return p
+}
+
+// safePath expands ~ and refuses a path that climbs out of where it was
+// pointed.
+//
+// The braces to theme.ValidName's belt: names are checked where they enter, and
+// the paths built out of them are checked again where they are used. A `..` is
+// never something a definition needs — the file it means can always be named
+// directly — so the one way one appears here is a value that came from
+// somewhere it should not have.
+func safePath(p string) (string, error) {
+	p = expandHome(p)
+	for _, seg := range strings.Split(p, string(os.PathSeparator)) {
+		if seg == ".." {
+			return "", fmt.Errorf("path %q climbs out of the directory it was pointed at", p)
+		}
+	}
+	return p, nil
 }
 
 func shortPath(p string) string {
