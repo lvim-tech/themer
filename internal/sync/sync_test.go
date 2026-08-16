@@ -81,6 +81,53 @@ func TestRunWithoutAURLSaysSo(t *testing.T) {
 	}
 }
 
+// A name that could not be used as one never reaches the disk: the list is
+// fetched over the network, and everything downstream turns a name into a path.
+func TestRunDropsANameItCannotUse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "LvimNord_dark\n../../../etc/passwd\n/absolute\n")
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "themes.txt")
+	n, err := Run(srv.URL, dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("n = %d, want only the one usable name", n)
+	}
+	if got := read(t, dest); got != "LvimNord_dark\n" {
+		t.Errorf("list = %q", got)
+	}
+}
+
+// The client's timeout bounds how long an answer may take, not how big it may
+// be. Without a ceiling, a server that trickles gigabytes is buffered whole.
+func TestRunRefusesAnAnswerTooLargeToBeAList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chunk := strings.Repeat("LvimNord_dark\n", 1024)
+		for written := 0; written < maxList+len(chunk); written += len(chunk) {
+			if _, err := fmt.Fprint(w, chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "themes.txt")
+	_, err := Run(srv.URL, dest)
+	if err == nil {
+		t.Fatal("an answer past the ceiling was accepted")
+	}
+	if !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("error = %v, want it to name the size", err)
+	}
+	if _, err := os.Stat(dest); err == nil {
+		t.Error("the oversized answer was written anyway")
+	}
+}
+
 func read(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

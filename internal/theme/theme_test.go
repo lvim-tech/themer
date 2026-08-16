@@ -3,6 +3,7 @@ package theme
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -71,6 +72,54 @@ func TestDiscoverKeepsANameOutsideTheScheme(t *testing.T) {
 func TestDiscoverRejectsAnEmptyList(t *testing.T) {
 	if _, err := Discover(writeList(t, "# only a comment\n")); err == nil {
 		t.Error("a list naming no themes was accepted")
+	}
+}
+
+// Every name is substituted into a filesystem path, so a published name that
+// is not a single path component is dropped where it enters — before anything
+// downstream builds a path out of it.
+func TestValidNameHoldsANameToOnePathComponent(t *testing.T) {
+	for _, name := range []string{"LvimNord_dark", "Solarized", "base16.default-dark", "a"} {
+		if !ValidName(name) {
+			t.Errorf("%q was refused, and it is an ordinary theme name", name)
+		}
+	}
+	for _, name := range []string{
+		"../../.config", "a/b", "..", ".hidden", "-flag", "", "with space",
+		"nul\x00byte", "~/elsewhere", "/etc/passwd",
+	} {
+		if ValidName(name) {
+			t.Errorf("%q was accepted as a theme name", name)
+		}
+	}
+}
+
+// One unusable name must not take the rest of the list with it, and must not
+// reach the picker either.
+func TestDiscoverDropsANameItCannotUse(t *testing.T) {
+	got, err := Discover(writeList(t, "LvimNord_dark\n../../../etc\nLvimNord_soft\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("themes = %v, want only the two usable names", got)
+	}
+	for _, th := range got {
+		if !ValidName(th.Name) {
+			t.Errorf("%q survived Discover", th.Name)
+		}
+	}
+}
+
+// A list of nothing but unusable names is a failure that has to say what it
+// was, or it reads as the generator having published nothing.
+func TestDiscoverSaysWhenEveryNameWasRefused(t *testing.T) {
+	_, err := Discover(writeList(t, "../../../etc\n/etc/passwd\n"))
+	if err == nil {
+		t.Fatal("a list of unusable names was accepted")
+	}
+	if !strings.Contains(err.Error(), "usable") {
+		t.Errorf("error = %v, want it to say the names were refused", err)
 	}
 }
 

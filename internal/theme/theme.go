@@ -11,6 +11,7 @@ package theme
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -29,9 +30,6 @@ type Theme struct {
 	// so holding these is holding a picture of a palette, not a palette.
 	Swatch []string
 }
-
-// GTKArg is the palette basename: everforest_soft.
-func (t Theme) GTKArg() string { return t.Family + "_" + t.Variant }
 
 // GTKName is the directory the theme installs under in ~/.local/share/themes
 // and the value gtk-theme-name takes: Lvim-EverforestSoft. It is derived, not
@@ -52,6 +50,24 @@ func capitalise(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
+// nameShape is what a theme name may look like, and it is a security boundary
+// rather than a matter of taste.
+//
+// The list is fetched over the network, and every name in it is substituted for
+// {theme} and {family} into PATHS: the file a target downloads, the directory a
+// tree is copied into — and copy-tree removes that directory before writing it.
+// A published name of `../../../.config` therefore aims those operations
+// wherever the list wants them, and the user sees nothing but a theme in the
+// picker. So a name is held to one path component of ordinary characters: no
+// separator, nothing that can be read as `..`, and a first character that rules
+// out a name arriving as a command-line flag.
+var nameShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// ValidName reports whether name may be used as a theme name. Everything
+// downstream treats a name as a path component, so this is where that is made
+// true.
+func ValidName(name string) bool { return nameShape.MatchString(name) }
+
 // Discover reads the theme names from the list `themer --sync` fetched.
 //
 // One line per canonical name. Nothing is parsed out of a palette any more:
@@ -63,6 +79,7 @@ func Discover(listFile string) ([]Theme, error) {
 		return nil, fmt.Errorf("theme list: %w", err)
 	}
 	var themes []Theme
+	refused := 0
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -72,12 +89,22 @@ func Discover(listFile string) ([]Theme, error) {
 		// publish — a list that carries none still works, it just has
 		// nothing to show.
 		fields := strings.Fields(line)
+		if !ValidName(fields[0]) {
+			// Dropped rather than fatal: one unusable name must not take the
+			// other forty-seven away with it, and a name this list has no
+			// business publishing is not one to hand to the filesystem.
+			refused++
+			continue
+		}
 		t := FromName(fields[0])
 		t.Swatch = fields[1:]
 		themes = append(themes, t)
 	}
 	sort.Slice(themes, func(i, j int) bool { return themes[i].Name < themes[j].Name })
 	if len(themes) == 0 {
+		if refused > 0 {
+			return nil, fmt.Errorf("%s names %d themes, none of them usable as a name", listFile, refused)
+		}
 		return nil, fmt.Errorf("%s names no themes", listFile)
 	}
 	return themes, nil

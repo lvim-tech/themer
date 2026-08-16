@@ -12,15 +12,29 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/lvim-tech/themer/internal/safefile"
+	"github.com/lvim-tech/themer/internal/theme"
 )
+
+// maxList is as much of the answer as is read.
+//
+// A list of theme names is a couple of kilobytes; a megabyte is already a
+// hundred times what any generator will publish. The client's timeout bounds
+// how LONG a body may take, not how BIG it may be, so without a ceiling a
+// server that trickles gigabytes stays inside the timeout and is buffered
+// whole.
+const maxList = 1 << 20
 
 // Run fetches the theme list at url and writes it to dest, returning how many
 // names landed.
+//
+// url should be https. The names it returns are substituted into filesystem
+// paths downstream, so on plain http anyone on the path chooses them — see
+// theme.ValidName for what that would otherwise be worth.
 func Run(url, dest string) (int, error) {
 	if url == "" {
 		return 0, fmt.Errorf("no themes_url is configured")
@@ -35,15 +49,25 @@ func Run(url, dest string) (int, error) {
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("fetching %s: %s", url, resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	// One byte past the ceiling, so going over is detected rather than silently
+	// truncating the list to a prefix.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxList+1))
 	if err != nil {
 		return 0, fmt.Errorf("reading %s: %w", url, err)
+	}
+	if len(body) > maxList {
+		return 0, fmt.Errorf("reading %s: the answer is larger than %d bytes, which is not a theme list", url, maxList)
 	}
 
 	var names []string
 	for _, line := range strings.Split(string(body), "\n") {
 		name := strings.TrimSpace(line)
 		if name == "" || strings.HasPrefix(name, "#") {
+			continue
+		}
+		// Checked here as well as in theme.Discover, so a name that could not
+		// be used never reaches the disk in the first place.
+		if !theme.ValidName(strings.Fields(name)[0]) {
 			continue
 		}
 		names = append(names, name)
@@ -56,16 +80,10 @@ func Run(url, dest string) (int, error) {
 	}
 	sort.Strings(names)
 
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return 0, err
-	}
-	// Write-then-rename: a sync that dies mid-write must not leave a truncated
-	// list, which looks exactly like themes having been removed upstream.
-	tmp := dest + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strings.Join(names, "\n")+"\n"), 0o644); err != nil {
-		return 0, err
-	}
-	if err := os.Rename(tmp, dest); err != nil {
+	// Written through a temporary file: a sync that dies mid-write must not
+	// leave a truncated list, which looks exactly like themes having been
+	// removed upstream.
+	if err := safefile.Write(dest, []byte(strings.Join(names, "\n")+"\n"), 0o644); err != nil {
 		return 0, err
 	}
 	return len(names), nil
