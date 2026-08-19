@@ -16,9 +16,17 @@ import (
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
+
+	"github.com/lvim-tech/themer/internal/uitheme"
 )
 
 type Config struct {
+	// Theme selects how themer's OWN interface looks — its chrome, not the
+	// palettes it switches between. It names a built-in preset or a file in
+	// ~/.config/themer/themes, and may override the border or icon set. Left
+	// unset it resolves to the family default, so themer is themeable like the
+	// rest of the tools it drives.
+	Theme uitheme.Theme `toml:"theme,omitempty"`
 	// StateFile is the file this setup reads $THEME from — themer marks the
 	// current theme by reading it. WRITING it is a target like any other, so
 	// there is no default here: another setup may keep it elsewhere, or have
@@ -445,6 +453,12 @@ func merge(dst *Config, src Config) {
 	}
 	if src.ThemesURL != "" {
 		dst.ThemesURL = src.ThemesURL
+	}
+	// The interface theme is a small table, so it is taken whole: naming it in
+	// config.toml at all means choosing it, and a partial [theme] still resolves
+	// against the default base downstream.
+	if src.Theme != (uitheme.Theme{}) {
+		dst.Theme = src.Theme
 	}
 }
 

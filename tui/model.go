@@ -1,5 +1,11 @@
-// Package tui is themer's whole interface: pick a theme from the list,
-// watch each applier land. Two screens, nothing modal.
+// Package tui is themer's whole interface: pick a theme from the list, watch
+// each applier land. Two screens, nothing modal.
+//
+// The interface dresses itself the same way the rest of the lvim-tech family
+// does: a title badge, a tab strip, a selection and status markers, all coloured
+// from a resolved uitheme.Theme compiled once into a Styles (see styles.go).
+// themer's own config selects that theme by name — so the theme-switcher is
+// itself themeable, instead of the hardcoded ANSI indices it used to carry.
 package tui
 
 import (
@@ -14,6 +20,7 @@ import (
 	"github.com/lvim-tech/themer/internal/apply"
 	"github.com/lvim-tech/themer/internal/config"
 	"github.com/lvim-tech/themer/internal/theme"
+	"github.com/lvim-tech/themer/internal/uitheme"
 )
 
 type screen int
@@ -34,6 +41,10 @@ func (i item) FilterValue() string { return i.t.Name }
 // swatchFor renders the preview blocks from the colours the published list
 // carried. A theme whose line named none simply shows nothing — the list
 // belongs to the generator, and a picker is in no position to insist.
+//
+// These are the OTHER themes' palettes, shown as a picture beside the name; they
+// are read straight from the published list and never resolved through the
+// interface's own theme, which dresses only the chrome around them.
 func swatchFor(t theme.Theme) string {
 	var b strings.Builder
 	for _, hex := range t.Swatch {
@@ -42,10 +53,13 @@ func swatchFor(t theme.Theme) string {
 	return b.String()
 }
 
-// itemDelegate renders one theme per line: marker, name, swatches. The
-// swatch row is precomputed — 48 themes × a redraw per keystroke is not
-// where lipgloss styles should be built.
-type itemDelegate struct{}
+// itemDelegate renders one theme per line: marker, name, swatches. The swatch
+// row is precomputed — 48 themes × a redraw per keystroke is not where lipgloss
+// styles should be built. It carries the compiled Styles so every row draws the
+// current-theme marker and the selection in the interface's own colours.
+type itemDelegate struct {
+	styles Styles
+}
 
 func (d itemDelegate) Height() int                             { return 1 }
 func (d itemDelegate) Spacing() int                            { return 0 }
@@ -55,33 +69,24 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, li list.Item)
 	if !ok {
 		return
 	}
+	s := d.styles
 	name := fmt.Sprintf("%-28s", it.t.Name)
 	marker := "  "
 	if it.current {
-		marker = markerStyle.Render("● ")
+		marker = s.Marker.Render(s.Icons.Current)
 	}
-	line := marker + name + " " + it.swatch
+	var line string
 	if index == m.Index() {
-		line = selectedStyle.Render("│ ") + marker + selectedStyle.Render(name) + " " + it.swatch
+		line = s.Cursor.Render(s.Icons.Output+" ") + marker + s.Selection.Render(name) + " " + it.swatch
 	} else {
-		line = "  " + line
+		line = "  " + marker + name + " " + it.swatch
 	}
 	fmt.Fprint(w, line)
 }
 
-var (
-	markerStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	selectedStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	activeTabStyle = lipgloss.NewStyle().Bold(true).Reverse(true)
-	tabStyle       = lipgloss.NewStyle().Faint(true)
-	dimStyle       = lipgloss.NewStyle().Faint(true)
-	okStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	failStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	titleStyle     = lipgloss.NewStyle().Bold(true)
-)
-
 type Model struct {
 	cfg      config.Config
+	styles   Styles
 	themes   []theme.Theme
 	list     list.Model
 	screen   screen
@@ -102,6 +107,13 @@ type Model struct {
 }
 
 func New(cfg config.Config, themes []theme.Theme) Model {
+	// The interface's own theme: the name selected in config.toml, resolved
+	// against the built-in presets and the themes directory. A theme that will
+	// not resolve is not fatal here — ResolveTheme hands back the family default
+	// so the picker still opens dressed like the rest of the tools.
+	resolved, _ := uitheme.ResolveTheme(cfg.Theme)
+	s := NewStyles(resolved)
+
 	current := theme.Current(cfg.StateFile)
 	var families []string
 	for _, t := range themes {
@@ -109,31 +121,33 @@ func New(cfg config.Config, themes []theme.Theme) Model {
 			families = append(families, t.Family) // themes arrive sorted, so families group
 		}
 	}
-	l := list.New(nil, itemDelegate{}, 0, 0)
+	l := list.New(nil, itemDelegate{styles: s}, 0, 0)
 	l.Title = "themer — one switch for the whole desktop"
 	l.SetShowStatusBar(false)
-	l.SetShowTitle(false) // the tab bar carries the context instead
-	l.Styles.Title = titleStyle
-	// The filter's prompt and cursor take the interface's own colours. bubbles reads
-	// Styles.Filter* exactly once, inside list.New(), so setting the struct afterwards reaches
-	// nothing — the input keeps the library's defaults: a neon yellow prompt (#ECFD65) and a
-	// pink cursor (#EE6FF8), neither of which belongs to any palette here.
-	l.Styles.FilterPrompt = selectedStyle
-	l.Styles.FilterCursor = selectedStyle
-	l.FilterInput.PromptStyle = selectedStyle
-	l.FilterInput.Cursor.Style = selectedStyle
-	l.FilterInput.PlaceholderStyle = dimStyle
+	l.SetShowTitle(false) // the title badge carries the context instead
+	l.SetShowHelp(false)  // the footer draws contextual, wrapping hints
+	l.Styles.Title = s.Title
+	// The filter's prompt and cursor take the interface's own colours. bubbles
+	// reads Styles.Filter* exactly once, inside list.New(), so setting the struct
+	// afterwards reaches nothing — the input keeps the library's defaults: a neon
+	// yellow prompt (#ECFD65) and a pink cursor (#EE6FF8), neither of which
+	// belongs to any palette here.
+	l.Styles.FilterPrompt = s.Cursor
+	l.Styles.FilterCursor = s.Cursor
+	l.FilterInput.PromptStyle = s.Cursor
+	l.FilterInput.Cursor.Style = s.Cursor
+	l.FilterInput.PlaceholderStyle = s.Muted
 
-	// The paginator's default • dots read as specks under a 48-item list.
-	// Full circles, one space apart — the paginator itself concatenates the
-	// dots with no gap, so the space rides inside each dot's string.
-	l.Paginator.ActiveDot = selectedStyle.Render("● ")
-	l.Paginator.InactiveDot = dimStyle.Render("○ ")
+	// The paginator's default • dots read as specks under a 48-item list. Full
+	// circles, one space apart — the paginator itself concatenates the dots with
+	// no gap, so the space rides inside each dot's string.
+	l.Paginator.ActiveDot = s.Cursor.Render(s.Icons.PageActive)
+	l.Paginator.InactiveDot = s.Muted.Render(s.Icons.PageInactive)
 	items := make([]item, len(themes))
 	for i, t := range themes {
 		items[i] = item{t: t, current: t.Name == current, swatch: swatchFor(t)}
 	}
-	m := Model{cfg: cfg, themes: themes, list: l, current: current, items: items, families: families}
+	m := Model{cfg: cfg, styles: s, themes: themes, list: l, current: current, items: items, families: families}
 	m.setTab(0)
 	m.selectCurrent() // open on the active theme, not on whatever sorts first
 	return m
@@ -149,9 +163,9 @@ func (m *Model) selectCurrent() {
 	}
 }
 
-// setTab fills the list with the tab's themes: tab 0 is every family, tab
-// i>0 is families[i-1]. The cursor goes back to the top — carrying an index
-// between differently sized lists lands on an arbitrary theme.
+// setTab fills the list with the tab's themes: tab 0 is every family, tab i>0 is
+// families[i-1]. The cursor goes back to the top — carrying an index between
+// differently sized lists lands on an arbitrary theme.
 func (m *Model) setTab(tab int) {
 	m.tab = tab
 	var visible []list.Item
@@ -185,9 +199,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		// The tab bar wraps on narrow terminals; measure it instead of
-		// assuming one line, or the list draws past the bottom edge.
-		m.list.SetSize(msg.Width, msg.Height-lipgloss.Height(m.tabBar())-1)
+		// The chrome wraps on narrow terminals: the tab strip and the footer
+		// hints both spill to a second line rather than truncate. Measure them
+		// instead of assuming one line each, or the list draws past the bottom
+		// edge.
+		chromeH := lipgloss.Height(m.header()) + lipgloss.Height(m.listFooter())
+		m.list.SetSize(msg.Width, msg.Height-chromeH)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -276,27 +293,46 @@ func (m Model) View() string {
 	case screenApply:
 		return m.viewApply()
 	default:
-		v := m.tabBar() + "\n" + m.list.View()
+		parts := []string{m.header(), m.list.View()}
 		if m.err != nil {
-			v += "\n" + failStyle.Render("✗ "+m.err.Error())
+			parts = append(parts, m.styles.Err.Render(m.styles.Icons.Error+" "+m.err.Error()))
 		}
-		return v
+		parts = append(parts, m.listFooter())
+		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
 }
 
-// tabBar renders All plus one tab per family. Tabs wrap as plain text on
-// narrow terminals rather than truncating: losing sight of a family is
-// worse than a second line.
+// header renders the title badge, its muted meta line and the family tab strip.
+func (m Model) header() string {
+	s := m.styles
+
+	meta := fmt.Sprintf("%d themes", len(m.themes))
+	if m.current != "" {
+		meta += fmt.Sprintf("  %s  current: %s", s.Icons.Separator, m.current)
+	}
+	title := lipgloss.JoinHorizontal(lipgloss.Center,
+		s.Title.Render(" themer "),
+		"  ",
+		s.HeaderMeta.Render(meta),
+	)
+
+	return lipgloss.JoinVertical(lipgloss.Left, title, m.tabBar())
+}
+
+// tabBar renders All plus one tab per family. Tabs wrap as plain text on narrow
+// terminals rather than truncating: losing sight of a family is worse than a
+// second line. The active tab is accent_alt bold, the rest muted.
 func (m Model) tabBar() string {
+	s := m.styles
 	labels := make([]string, 0, len(m.families)+1)
 	for i, name := range append([]string{"All"}, m.families...) {
 		if i > 0 {
 			name = strings.ToUpper(name[:1]) + name[1:]
 		}
 		if i == m.tab {
-			labels = append(labels, activeTabStyle.Render(" "+name+" "))
+			labels = append(labels, s.TabActive.Render(name))
 		} else {
-			labels = append(labels, tabStyle.Render(" "+name+" "))
+			labels = append(labels, s.Tab.Render(name))
 		}
 	}
 	bar := strings.Join(labels, "")
@@ -306,30 +342,66 @@ func (m Model) tabBar() string {
 	return bar
 }
 
+// listFooter renders the contextual key hints under the list. They wrap to the
+// terminal width rather than truncate — a key the user cannot see is a key they
+// do not have — and go quiet while the filter is typing, where the keys belong
+// to the input.
+func (m Model) listFooter() string {
+	s := m.styles
+	var parts []string
+	if m.list.FilterState() == list.Filtering {
+		parts = []string{"enter accept", "esc cancel"}
+	} else {
+		parts = []string{"↑/↓ move", "enter apply", "tab family", "/ filter", "q quit"}
+	}
+	hint := s.Muted.Render(m.hint(parts...))
+	if m.width > 0 {
+		return lipgloss.NewStyle().Width(m.width).Render(hint)
+	}
+	return hint
+}
+
+// hint joins key hints with the theme's separator glyph.
+func (m Model) hint(parts ...string) string {
+	return strings.Join(parts, "  "+m.styles.Icons.Bullet+"  ")
+}
+
+// viewApply renders the per-target status list: the title badge, one marker per
+// applier coloured by its outcome, and a footer that says whether the switch is
+// still running.
 func (m Model) viewApply() string {
+	s := m.styles
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Switching to "+m.target.Name) + "\n\n")
+
+	title := lipgloss.JoinHorizontal(lipgloss.Center,
+		s.Title.Render(" themer "),
+		"  ",
+		s.HeaderMeta.Render("Switching to "+m.target.Name),
+	)
+	b.WriteString(title + "\n\n")
+
 	for _, r := range m.results {
 		var mark, note string
 		switch r.Status {
 		case apply.StatusPending:
-			mark, note = dimStyle.Render("·"), ""
+			mark, note = s.Muted.Render(s.Icons.Pending), ""
 		case apply.StatusRunning:
-			mark, note = "…", ""
+			mark, note = s.Step.Render(s.Icons.Running), ""
 		case apply.StatusOK:
-			mark, note = okStyle.Render("✓"), dimStyle.Render(r.Note)
+			mark, note = s.OK.Render(s.Icons.Done), s.Muted.Render(r.Note)
 		case apply.StatusSkipped:
-			mark, note = dimStyle.Render("○"), dimStyle.Render(r.Note)
+			mark, note = s.Muted.Render(s.Icons.Skipped), s.Muted.Render(r.Note)
 		case apply.StatusFailed:
-			mark, note = failStyle.Render("✗"), failStyle.Render(r.Note)
+			mark, note = s.Err.Render(s.Icons.Error), s.Err.Render(r.Note)
 		}
 		fmt.Fprintf(&b, "  %s %-16s %s\n", mark, r.Name, note)
 	}
 	b.WriteString("\n")
+
 	if m.applying {
-		b.WriteString(dimStyle.Render("applying…"))
+		b.WriteString(s.Muted.Render("applying…"))
 	} else {
-		b.WriteString(dimStyle.Render("done — enter/esc back, q quit"))
+		b.WriteString(s.Muted.Render(m.hint("enter/esc back", "q quit")))
 	}
 	return b.String()
 }
