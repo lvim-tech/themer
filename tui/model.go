@@ -199,10 +199,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		// The chrome wraps on narrow terminals: the tab strip and the footer
-		// hints both spill to a second line rather than truncate. Measure them
-		// instead of assuming one line each, or the list draws past the bottom
-		// edge.
+		// The footer hints wrap on narrow terminals rather than truncate.
+		// Measure the chrome instead of assuming one line per part, or the
+		// list draws past the bottom edge and unsticks the footer.
 		chromeH := lipgloss.Height(m.header()) + lipgloss.Height(m.listFooter())
 		m.list.SetSize(msg.Width, msg.Height-chromeH)
 		return m, nil
@@ -293,93 +292,177 @@ func (m Model) View() string {
 	case screenApply:
 		return m.viewApply()
 	default:
-		parts := []string{m.header(), m.list.View()}
+		body := m.list.View()
 		if m.err != nil {
-			parts = append(parts, m.styles.Err.Render(m.styles.Icons.Error+" "+m.err.Error()))
+			body = lipgloss.JoinVertical(lipgloss.Left, body,
+				m.styles.Err.Render(m.styles.Icons.Error+" "+m.err.Error()))
 		}
-		parts = append(parts, m.listFooter())
-		return lipgloss.JoinVertical(lipgloss.Left, parts...)
+		return m.frame(m.header(), body, m.listFooter())
 	}
 }
 
-// header renders the title badge, its muted meta line and the family tab strip.
+// frame composes one screen: the header pinned to the top, the footer pinned to
+// the bottom edge, and the body filling — never overflowing — the space between.
+// Padding the body is what makes the footer sticky: without it the hints ride
+// directly under the last row and drift up and down as the list shrinks.
+func (m Model) frame(header, body, footer string) string {
+	if m.height <= 0 {
+		// No size yet (the first WindowSizeMsg has not arrived): compose
+		// plainly rather than guess an edge to stick the footer to.
+		return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	}
+	bodyH := max(m.height-lipgloss.Height(header)-lipgloss.Height(footer), 0)
+	body = clampLines(body, bodyH)
+	if pad := bodyH - lipgloss.Height(body); pad > 0 {
+		body += strings.Repeat("\n", pad)
+	}
+	// The backstop: every part is already sized to fit, but a frame taller than
+	// the terminal scrolls, and under the alternate screen the row lost off the
+	// top is the header.
+	return clampLines(header+"\n"+body+"\n"+footer, m.height)
+}
+
+// clampLines cuts s to at most n lines, from the bottom.
+func clampLines(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[:n], "\n")
+}
+
+// header renders the top bar — the application chip on the left, the family tab
+// strip beside it — and a muted meta line under it.
 func (m Model) header() string {
 	s := m.styles
+
+	chip := s.Title.Render("themer")
+	bar := chip + " " + m.tabStrip(m.width-lipgloss.Width(chip)-1)
 
 	meta := fmt.Sprintf("%d themes", len(m.themes))
 	if m.current != "" {
 		meta += fmt.Sprintf("  %s  current: %s", s.Icons.Separator, m.current)
 	}
-	title := lipgloss.JoinHorizontal(lipgloss.Center,
-		s.Title.Render(" themer "),
-		"  ",
-		s.HeaderMeta.Render(meta),
-	)
 
-	return lipgloss.JoinVertical(lipgloss.Left, title, m.tabBar())
+	return lipgloss.JoinVertical(lipgloss.Left, bar, s.HeaderMeta.Render(meta))
 }
 
-// tabBar renders All plus one tab per family. Tabs wrap as plain text on narrow
-// terminals rather than truncating: losing sight of a family is worse than a
-// second line. The active tab is accent_alt bold, the rest muted.
-func (m Model) tabBar() string {
+// tabStrip renders All plus one tab per family, narrowing until it fits rather
+// than wrapping or running off the edge.
+//
+// Three widths, tried in order: padded tabs with the active one a button; bare
+// labels one space apart; then only the active tab, a count of the rest and the
+// key that moves. A strip that overflows pushes the last families out of sight,
+// and a family the user cannot see is a family they do not know exists.
+func (m Model) tabStrip(avail int) string {
 	s := m.styles
 	labels := make([]string, 0, len(m.families)+1)
 	for i, name := range append([]string{"All"}, m.families...) {
 		if i > 0 {
 			name = strings.ToUpper(name[:1]) + name[1:]
 		}
+		labels = append(labels, name)
+	}
+
+	full := make([]string, len(labels))
+	tight := make([]string, len(labels))
+	for i, name := range labels {
 		if i == m.tab {
-			labels = append(labels, s.TabActive.Render(name))
+			// The button keeps its shape at both widths: the active tab is the
+			// one place the strip must never go quiet.
+			full[i] = s.TabActive.Render(name)
+			tight[i] = s.TabActive.Render(name)
 		} else {
-			labels = append(labels, s.Tab.Render(name))
+			full[i] = s.Tab.Render(name)
+			tight[i] = s.TabTight.Render(name)
 		}
 	}
-	bar := strings.Join(labels, "")
-	if m.width > 0 {
-		bar = lipgloss.NewStyle().Width(m.width).Render(bar)
+
+	if bar := strings.Join(full, ""); avail <= 0 || lipgloss.Width(bar) <= avail {
+		return bar
 	}
-	return bar
+	if bar := strings.Join(tight, " "); lipgloss.Width(bar) <= avail {
+		return bar
+	}
+	// Nothing else fits. Naming where you are beats a row cut off at an
+	// arbitrary point, which reads as though the missing families do not exist.
+	return s.TabActive.Render(labels[m.tab]) +
+		s.Muted.Render(fmt.Sprintf("  %d/%d  tab moves", m.tab+1, len(labels)))
 }
 
-// listFooter renders the contextual key hints under the list. They wrap to the
-// terminal width rather than truncate — a key the user cannot see is a key they
-// do not have — and go quiet while the filter is typing, where the keys belong
-// to the input.
-func (m Model) listFooter() string {
+// hintButton renders one footer hint the family way: the key in brackets,
+// painted accent, with its muted description beside it.
+func (m Model) hintButton(key, label string) string {
 	s := m.styles
+	return s.Key.Render("["+key+"]") + " " + s.Muted.Render(label)
+}
+
+// wrapHints lays the hint buttons into lines that fit the width, whole hints
+// only — a key clipped mid-bracket is worse than a second line, and a hint that
+// falls off the edge is the one nobody discovers.
+//
+// Measured with lipgloss.Width, not len: every hint carries colour, and the
+// escape codes would otherwise be counted as characters.
+func (m Model) wrapHints(parts []string) string {
+	width := m.width
+	if width < 20 {
+		width = 20
+	}
+	var lines []string
+	cur, curW := "", 0
+	for _, p := range parts {
+		w := lipgloss.Width(p)
+		switch {
+		case cur == "":
+			cur, curW = p, w
+		case curW+2+w <= width:
+			cur, curW = cur+"  "+p, curW+2+w
+		default:
+			lines = append(lines, cur)
+			cur, curW = p, w
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// listFooter renders the contextual key hints that sit on the bottom edge. They
+// go quiet while the filter is typing, where the keys belong to the input.
+func (m Model) listFooter() string {
 	var parts []string
 	if m.list.FilterState() == list.Filtering {
-		parts = []string{"enter accept", "esc cancel"}
+		parts = []string{
+			m.hintButton("enter", "accept"),
+			m.hintButton("esc", "cancel"),
+		}
 	} else {
-		parts = []string{"↑/↓ move", "enter apply", "tab family", "/ filter", "q quit"}
+		parts = []string{
+			m.hintButton("↑/↓", "move"),
+			m.hintButton("enter", "apply"),
+			m.hintButton("tab", "family"),
+			m.hintButton("/", "filter"),
+			m.hintButton("q", "quit"),
+		}
 	}
-	hint := s.Muted.Render(m.hint(parts...))
-	if m.width > 0 {
-		return lipgloss.NewStyle().Width(m.width).Render(hint)
-	}
-	return hint
+	return m.wrapHints(parts)
 }
 
-// hint joins key hints with the theme's separator glyph.
-func (m Model) hint(parts ...string) string {
-	return strings.Join(parts, "  "+m.styles.Icons.Bullet+"  ")
-}
-
-// viewApply renders the per-target status list: the title badge, one marker per
-// applier coloured by its outcome, and a footer that says whether the switch is
-// still running.
+// viewApply renders the per-target status list: the chip up top, one marker per
+// applier coloured by its outcome, and a bottom-edge footer that says whether
+// the switch is still running.
 func (m Model) viewApply() string {
 	s := m.styles
+
+	header := s.Title.Render("themer") + " " +
+		s.HeaderMeta.Render("Switching to "+m.target.Name)
+
 	var b strings.Builder
-
-	title := lipgloss.JoinHorizontal(lipgloss.Center,
-		s.Title.Render(" themer "),
-		"  ",
-		s.HeaderMeta.Render("Switching to "+m.target.Name),
-	)
-	b.WriteString(title + "\n\n")
-
+	b.WriteString("\n")
 	for _, r := range m.results {
 		var mark, note string
 		switch r.Status {
@@ -396,12 +479,16 @@ func (m Model) viewApply() string {
 		}
 		fmt.Fprintf(&b, "  %s %-16s %s\n", mark, r.Name, note)
 	}
-	b.WriteString("\n")
+	body := strings.TrimRight(b.String(), "\n")
 
+	var footer string
 	if m.applying {
-		b.WriteString(s.Muted.Render("applying…"))
+		footer = s.Muted.Render("applying…")
 	} else {
-		b.WriteString(s.Muted.Render(m.hint("enter/esc back", "q quit")))
+		footer = m.wrapHints([]string{
+			m.hintButton("enter/esc", "back"),
+			m.hintButton("q", "quit"),
+		})
 	}
-	return b.String()
+	return m.frame(header, body, footer)
 }

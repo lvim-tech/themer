@@ -117,6 +117,55 @@ func TestTabsCycleThroughTheFamilies(t *testing.T) {
 	}
 }
 
+// On a terminal too narrow for the tab strip it collapses to the active tab, a
+// count of the rest and the key that moves — not to a row cut off at an
+// arbitrary point, which reads as though the missing families do not exist.
+func TestTabStripCollapsesWhenNarrow(t *testing.T) {
+	m := testModel(t)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 30})
+	m = next.(Model)
+	view := m.View()
+	for _, want := range []string{"1/3", "tab moves"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("collapsed tab strip is missing %q:\n%s", want, view)
+		}
+	}
+	// Only the top bar collapses; the meta line still names the current theme,
+	// so the family name is looked for on the strip's own row.
+	if bar := strings.Split(view, "\n")[0]; strings.Contains(bar, "Everforest") {
+		t.Errorf("a 20-column strip should not still name every family: %q", bar)
+	}
+}
+
+// The footer is sticky: the hints sit on the bottom edge of the terminal, not
+// directly under the last list row, and the frame never runs taller than the
+// window.
+func TestFooterSticksToTheBottomEdge(t *testing.T) {
+	m := testModel(t)
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) != 30 {
+		t.Fatalf("frame is %d lines on a 30-row terminal", len(lines))
+	}
+	if !strings.Contains(lines[len(lines)-1], "quit") {
+		t.Errorf("the bottom row does not carry the hints: %q", lines[len(lines)-1])
+	}
+}
+
+// The apply screen shares the frame: its footer sits on the bottom edge too.
+func TestApplyFooterSticksToTheBottomEdge(t *testing.T) {
+	m := testModel(t)
+	m.screen = screenApply
+	m.target = theme.Theme{Name: "LvimNord_dark", Family: "nord", Variant: "dark"}
+	m.results = []apply.Result{{Index: 0, Name: "~/.theme", Status: apply.StatusOK}}
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) != 30 {
+		t.Fatalf("apply frame is %d lines on a 30-row terminal", len(lines))
+	}
+	if !strings.Contains(lines[len(lines)-1], "quit") {
+		t.Errorf("the bottom row does not carry the hints: %q", lines[len(lines)-1])
+	}
+}
+
 // Coming back from the apply screen re-reads the state file, so the ● sits
 // on the theme that was just applied, not the one the program started with.
 func TestReturningFromApplyMovesTheCurrentMarker(t *testing.T) {

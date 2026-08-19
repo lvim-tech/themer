@@ -11,7 +11,7 @@
 //
 //	[theme]
 //	name = "default"   # a built-in, or themes/<name>.yaml
-//	border = "rounded"
+//	border = "normal"  # the family draws right angles; "rounded" stays accepted
 //	icons = "unicode"
 //
 // Anything left out falls back to the base, so selecting a theme never means

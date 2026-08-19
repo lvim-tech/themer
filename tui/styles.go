@@ -24,9 +24,16 @@ type Styles struct {
 	Title      lipgloss.Style
 	HeaderMeta lipgloss.Style
 
-	// Tab strip: active is accent_alt bold, inactive is muted.
+	// Tab strip: the active tab is a button — TitleFg on AccentAlt, bold — the
+	// rest muted. TabTight is the inactive tab with its padding taken away, the
+	// middle step the strip narrows through before collapsing entirely.
 	Tab       lipgloss.Style
 	TabActive lipgloss.Style
+	TabTight  lipgloss.Style
+
+	// Key paints the "[key]" half of a footer hint in the accent colour; the
+	// description beside it stays Muted.
+	Key lipgloss.Style
 
 	// Cursor is the accent bar down the left of the selected row, and the colour
 	// the filter prompt, cursor and active page dot take.
@@ -71,8 +78,13 @@ func NewStyles(theme uitheme.Theme) Styles {
 		Title:      bold(fg(bg(lipgloss.NewStyle(), c.Accent), c.TitleFg)).Padding(0, 1),
 		HeaderMeta: setFg(lipgloss.NewStyle(), muted),
 
-		Tab:       setFg(lipgloss.NewStyle().Padding(0, 1), muted),
-		TabActive: setFg(lipgloss.NewStyle().Padding(0, 1).Bold(true), accentAlt),
+		Tab: setFg(lipgloss.NewStyle().Padding(0, 1), muted),
+		// The active tab is drawn as a button, the same construction as the
+		// title chip: its own foreground on a painted background.
+		TabActive: bold(fg(bg(lipgloss.NewStyle(), c.AccentAlt), c.TitleFg)).Padding(0, 1),
+		TabTight:  setFg(lipgloss.NewStyle(), muted),
+
+		Key: setFg(lipgloss.NewStyle().Bold(true), accent),
 
 		Cursor: setFg(lipgloss.NewStyle(), accent),
 		Marker: setFg(lipgloss.NewStyle(), success),
@@ -108,10 +120,13 @@ func NewStyles(theme uitheme.Theme) Styles {
 		s.Muted = s.Muted.Faint(true)
 		s.HeaderMeta = s.HeaderMeta.Faint(true)
 		s.Tab = s.Tab.Faint(true)
+		s.TabTight = s.TabTight.Faint(true)
 	}
 	if c.AccentAlt.IsZero() {
 		s.Step = s.Step.Bold(true)
-		s.TabActive = s.TabActive.Bold(true).Underline(true)
+		// No background to paint the button with: reverse video keeps the
+		// active tab visible, the same trade the title chip makes.
+		s.TabActive = s.TabActive.Reverse(true)
 	}
 
 	return s
